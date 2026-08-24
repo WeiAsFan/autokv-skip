@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "name": "quick",
+  "hardware": {
+    "driver": "535.230.02",
+    "gpu_name": "NVIDIA RTX A6000",
+    "compute_capability": "8.6",
+    "vram_mib": 49140
+  },
+  "images": [
+    "vllm/vllm-openai:v0.26.0",
+    "vllm/vllm-openai:v0.19.1"
+  ],
+  "model": {
+    "id": "mistralai/Mistral-7B-Instruct-v0.3",
+    "num_layers": 32,
+    "num_kv_heads": 8,
+    "head_dim": 128,
+    "dtype": "bfloat16",
+    "attention_backend": "FLASHINFER",
+    "max_model_len": 32768
+  },
+  "selection": {
+    "mode": "coarse_to_fine",
+    "k": 4,
+    "group_size": 4,
+    "top_groups": 2,
+    "random_seeds": [11, 23, 37, 53, 71]
+  },
+  "quality": {
+    "probe_lengths": [8192, 16384],
+    "final_lengths": [8192, 16384, 30000],
+    "probe_depths": [0.2, 0.5, 0.8],
+    "final_depths": [0.1, 0.5, 0.9],
+    "probe_seeds": [42],
+    "final_seeds": [101, 202],
+    "max_tokens": 24
+  },
+  "benchmark": {
+    "input_lengths": [1024, 8192, 16384],
+    "output_lengths": [32, 256],
+    "num_prompts": 20,
+    "repeats": 1
+  },
+  "kv_cache_dtype": "fp8_e4m3",
+  "kv_cache_memory": "16G",
+  "seed": 42,
+  "calculate_kv_scales": true
+}

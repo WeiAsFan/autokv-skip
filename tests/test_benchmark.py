@@ -1,7 +1,25 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from autokv.benchmark import build_benchmark_matrix, parse_capacity_tokens
+from autokv.benchmark import BenchmarkRunner, build_benchmark_matrix, parse_capacity_tokens
+from autokv.commands import CommandResult
 from autokv.config import Profile
+from autokv.io import read_json
+from autokv.selection import Variant
+
+
+def command_result(argv, returncode=0, stdout="", stderr=""):
+    return CommandResult(tuple(argv), returncode, stdout, stderr, 0.01)
+
+
+class FakeClient:
+    def health(self):
+        return True
+
+    def complete(self, prompt, max_tokens):
+        return {"choices": [{"text": "warm"}]}
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -25,6 +43,81 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(len(cases), 6)
         self.assertEqual(cases[0].input_length, 1024)
         self.assertEqual(cases[-1].output_length, 256)
+
+    def test_benchmark_runner_writes_resumable_summary(self):
+        profile = Profile.from_dict(Profile.default_dict("quick"))
+        lock = {
+            "image_ref": "vllm/vllm-openai@sha256:" + "f" * 64,
+            "image_digest": "sha256:" + "f" * 64,
+            "model_revision": "a" * 40,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = []
+
+            def fake_runner(argv, timeout=None, **kwargs):
+                calls.append(tuple(argv))
+                if tuple(argv[:2]) == ("docker", "logs"):
+                    return command_result(
+                        argv,
+                        stdout=(
+                            "Using FLASHINFER backend\n"
+                            "FP8 KV cache enabled\n"
+                            "GPU KV cache size: 233,104 tokens\n"
+                            "Maximum concurrency for 32,768 tokens per request: 7.11x\n"
+                        ),
+                    )
+                if tuple(argv[:2]) == ("docker", "inspect"):
+                    return command_result(argv, stdout="autokv-skip\n")
+                if "bench" in argv:
+                    container_dir = argv[argv.index("--result-dir") + 1]
+                    filename = argv[argv.index("--result-filename") + 1]
+                    relative = Path(
+                        container_dir.removeprefix("/workspace/autokv-skip/")
+                    )
+                    result_path = root / relative / filename
+                    result_path.parent.mkdir(parents=True, exist_ok=True)
+                    result_path.write_text(
+                        json.dumps(
+                            {
+                                "request_throughput": 2.5,
+                                "output_throughput": 30.0,
+                                "median_ttft_ms": 123.0,
+                                "median_tpot_ms": 8.0,
+                                "median_itl_ms": 7.0,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                return command_result(argv)
+
+            runner = BenchmarkRunner(
+                profile,
+                root,
+                lock,
+                command_runner=fake_runner,
+                client_factory=lambda base_url, model_id: FakeClient(),
+            )
+            summary_path = runner.run_variant(
+                Variant.mixed("auto-4", (2, 7, 18, 29)),
+                run_id="abc123",
+                port=8000,
+            )
+            summary = read_json(summary_path)
+            self.assertTrue(summary["complete"])
+            self.assertEqual(summary["capacity"]["tokens"], 233104)
+            self.assertEqual(len(summary["scenarios"]), 6)
+            self.assertEqual(summary["aggregate"]["request_throughput"], 2.5)
+            call_count = len(calls)
+            self.assertEqual(
+                runner.run_variant(
+                    Variant.mixed("auto-4", (2, 7, 18, 29)),
+                    run_id="abc123",
+                    port=8000,
+                ),
+                summary_path,
+            )
+            self.assertEqual(len(calls), call_count)
 
 
 if __name__ == "__main__":
