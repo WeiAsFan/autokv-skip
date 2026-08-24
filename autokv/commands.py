@@ -90,7 +90,8 @@ def image_probe_commands(image: str) -> tuple[tuple[str, ...], ...]:
         "'compute_capability': list(torch.cuda.get_device_capability(0)), "
         "'gpu_name': torch.cuda.get_device_name(0), "
         "'torch': torch.__version__, 'cuda': torch.version.cuda, "
-        "'vllm': vllm.__version__, 'flashinfer': flashinfer.__version__}))"
+        "'vllm': vllm.__version__, "
+        "'flashinfer': getattr(flashinfer, '__version__', 'unknown')}))"
     )
     return (
         ("docker", "pull", image),
