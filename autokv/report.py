@@ -23,6 +23,29 @@ from autokv.memory import (
 )
 
 
+PERFORMANCE_CSV_FIELDS = (
+    "request_throughput",
+    "output_throughput",
+    "total_token_throughput",
+    "mean_ttft_ms",
+    "median_ttft_ms",
+    "p90_ttft_ms",
+    "p99_ttft_ms",
+    "mean_tpot_ms",
+    "median_tpot_ms",
+    "p90_tpot_ms",
+    "p99_tpot_ms",
+    "mean_itl_ms",
+    "median_itl_ms",
+    "p90_itl_ms",
+    "p99_itl_ms",
+    "mean_e2el_ms",
+    "median_e2el_ms",
+    "p90_e2el_ms",
+    "p99_e2el_ms",
+)
+
+
 @dataclass(frozen=True)
 class BootstrapCI:
     mean: float
@@ -155,8 +178,7 @@ def _summary_csv(
         "answer_nll",
         "capacity_tokens",
         "capacity_vs_bf16",
-        "request_throughput",
-        "median_ttft_ms",
+        *PERFORMANCE_CSV_FIELDS,
     )
     writer = csv.DictWriter(stream, fieldnames=fields)
     writer.writeheader()
@@ -165,24 +187,29 @@ def _summary_csv(
         aggregate = aggregates[name]
         capacity = capacities.get(name)
         perf = performance.get(name, {})
-        writer.writerow(
-            {
-                "config": name,
-                "samples": aggregate.samples,
-                "exact_match": f"{aggregate.exact_match:.6f}",
-                "quality_score": f"{aggregate.quality_score:.6f}",
-                "answer_nll": "" if aggregate.answer_nll is None else f"{aggregate.answer_nll:.6f}",
-                "capacity_tokens": "" if capacity is None else capacity.tokens,
-                "capacity_vs_bf16": (
-                    ""
-                    if capacity is None or baseline is None
-                    else f"{capacity.tokens / baseline.tokens:.6f}"
-                ),
-                "request_throughput": perf.get("request_throughput", ""),
-                "median_ttft_ms": perf.get("median_ttft_ms", ""),
-            }
-        )
+        row = {
+            "config": name,
+            "samples": aggregate.samples,
+            "exact_match": f"{aggregate.exact_match:.6f}",
+            "quality_score": f"{aggregate.quality_score:.6f}",
+            "answer_nll": "" if aggregate.answer_nll is None else f"{aggregate.answer_nll:.6f}",
+            "capacity_tokens": "" if capacity is None else capacity.tokens,
+            "capacity_vs_bf16": (
+                ""
+                if capacity is None or baseline is None
+                else f"{capacity.tokens / baseline.tokens:.6f}"
+            ),
+        }
+        row.update({field: perf.get(field, "") for field in PERFORMANCE_CSV_FIELDS})
+        writer.writerow(row)
     return stream.getvalue()
+
+
+def _format_metric(metrics: Mapping[str, Any], key: str) -> str:
+    value = metrics.get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "N/A"
+    return f"{float(value):.3f}"
 
 
 def render_report(
@@ -269,6 +296,7 @@ def render_report(
             f"- 模型 revision：`{model_revision}`",
             f"- vLLM：{versions.get('vllm', 'missing')}；容器 CUDA：{versions.get('cuda', 'missing')}",
             "- 注意力后端：FLASHINFER；KV 预算：16G；随机 token scales：启用。",
+            f"- 全实验质量评分模式：{selection.get('quality_mode', 'missing')}。",
             "",
             "## KV 显存公式",
             "",
@@ -311,14 +339,54 @@ def render_report(
             "",
             "## 服务性能",
             "",
-            "| 配置 | Request throughput | Median TTFT (ms) |",
-            "|---|---:|---:|",
+            "以下值是固定输入/输出长度矩阵与重复运行的算术聚合；逐场景原始 JSON 保存在 `perf/`，不要把不同长度的聚合当成单一请求的延迟。",
+            "",
+            "### 吞吐",
+            "",
+            "| 配置 | Request throughput (req/s) | Output throughput (tok/s) | Total token throughput (tok/s) |",
+            "|---|---:|---:|---:|",
         )
     )
     for name in ("bf16", "fp8", "auto-4"):
         metrics = performance.get(name, {})
         lines.append(
-            f"| {name} | {metrics.get('request_throughput', 'N/A')} | {metrics.get('median_ttft_ms', 'N/A')} |"
+            f"| {name} | {_format_metric(metrics, 'request_throughput')} | "
+            f"{_format_metric(metrics, 'output_throughput')} | "
+            f"{_format_metric(metrics, 'total_token_throughput')} |"
+        )
+    lines.extend(
+        (
+            "",
+            "### 首 token 与端到端延迟",
+            "",
+            "| 配置 | Median TTFT (ms) | P99 TTFT (ms) | Median E2E (ms) | P99 E2E (ms) |",
+            "|---|---:|---:|---:|---:|",
+        )
+    )
+    for name in ("bf16", "fp8", "auto-4"):
+        metrics = performance.get(name, {})
+        lines.append(
+            f"| {name} | {_format_metric(metrics, 'median_ttft_ms')} | "
+            f"{_format_metric(metrics, 'p99_ttft_ms')} | "
+            f"{_format_metric(metrics, 'median_e2el_ms')} | "
+            f"{_format_metric(metrics, 'p99_e2el_ms')} |"
+        )
+    lines.extend(
+        (
+            "",
+            "### Decode 延迟",
+            "",
+            "| 配置 | Median TPOT (ms) | P99 TPOT (ms) | Median ITL (ms) | P99 ITL (ms) |",
+            "|---|---:|---:|---:|---:|",
+        )
+    )
+    for name in ("bf16", "fp8", "auto-4"):
+        metrics = performance.get(name, {})
+        lines.append(
+            f"| {name} | {_format_metric(metrics, 'median_tpot_ms')} | "
+            f"{_format_metric(metrics, 'p99_tpot_ms')} | "
+            f"{_format_metric(metrics, 'median_itl_ms')} | "
+            f"{_format_metric(metrics, 'p99_itl_ms')} |"
         )
 
     checks = [

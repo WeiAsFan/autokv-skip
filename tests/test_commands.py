@@ -1,6 +1,8 @@
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from autokv.commands import (
     bench_command,
@@ -67,12 +69,22 @@ class CommandTests(unittest.TestCase):
             input_length=8192,
             output_length=32,
             result_relative_path=Path("runs/run1/perf/bf16-8k.json"),
+            model_revision="a" * 40,
         )
         joined = " ".join(argv)
         self.assertIn("--network host", joined)
         self.assertIn("sha256:locked bench serve", joined)
         self.assertIn("--random-input-len 8192", joined)
         self.assertIn("--random-output-len 32", joined)
+        self.assertIn("--seed 42", joined)
+        self.assertIn("--num-warmups 1", joined)
+        self.assertIn("--ignore-eos", argv)
+        self.assertIn("--percentile-metrics ttft,tpot,itl,e2el", joined)
+        self.assertIn("--metric-percentiles 90,99", joined)
+        self.assertIn("--temperature 0", joined)
+        self.assertIn("HF_HOME=/workspace/autokv-skip/.cache/huggingface", joined)
+        self.assertIn("--tokenizer /workspace/autokv-skip/.cache/huggingface/", joined)
+        self.assertIn("/snapshots/" + "a" * 40, joined)
 
     def test_container_name_is_deterministic_and_docker_safe(self):
         name = container_name("Run With Spaces", Variant.fp8())
@@ -86,6 +98,20 @@ class CommandTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), marker)
+
+    def test_run_command_normalizes_subprocess_timeout(self):
+        timeout = subprocess.TimeoutExpired(
+            cmd=["docker", "pull", "image:v1"],
+            timeout=30,
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+        with patch("autokv.commands.subprocess.run", side_effect=timeout):
+            result = run_command(("docker", "pull", "image:v1"), timeout=30)
+
+        self.assertEqual(result.returncode, 124)
+        self.assertIn("timed out after 30", result.stderr)
+        self.assertIn("partial stdout", result.stdout)
 
     def test_format_command_redacts_token(self):
         rendered = format_command(["tool", "--token", "secret"], secrets=["secret"])

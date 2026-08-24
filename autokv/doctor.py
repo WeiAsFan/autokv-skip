@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -209,6 +210,29 @@ def _run(runner: Runner, argv: Sequence[str], timeout: float) -> CommandResult:
     return runner(tuple(argv), timeout=timeout)
 
 
+def pull_with_retry(
+    runner: Runner,
+    argv: Sequence[str],
+    *,
+    timeout: float,
+    attempts: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[CommandResult, ...]:
+    """Run one image pull up to three times with deterministic backoff."""
+
+    if attempts <= 0:
+        raise ValueError("pull attempts must be positive")
+    results: list[CommandResult] = []
+    for attempt in range(attempts):
+        result = _run(runner, argv, timeout)
+        results.append(result)
+        if result.ok:
+            break
+        if attempt + 1 < attempts:
+            sleep(float(2**attempt))
+    return tuple(results)
+
+
 def lock_first_compatible_image(
     profile: Profile,
     project_root: Path,
@@ -260,8 +284,12 @@ def lock_first_compatible_image(
 
     for image in profile.images:
         pull_argv, cuda_argv, help_argv = image_probe_commands(image)
-        pull_result = _run(runner, pull_argv, 1800)
-        events.append(_event("pull", image, pull_result))
+        pull_results = pull_with_retry(runner, pull_argv, timeout=1800)
+        for attempt, result in enumerate(pull_results, start=1):
+            event = _event("pull", image, result)
+            event["attempt"] = attempt
+            events.append(event)
+        pull_result = pull_results[-1]
         if not pull_result.ok:
             failure_class = classify_pull_failure(
                 f"{pull_result.stdout}\n{pull_result.stderr}"

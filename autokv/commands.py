@@ -47,15 +47,35 @@ def run_command(
         merged_env = os.environ.copy()
         merged_env.update(env)
     start = time.monotonic()
-    completed = subprocess.run(
-        list(argv),
-        shell=False,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        env=merged_env,
-        cwd=None if cwd is None else str(cwd),
-    )
+    try:
+        completed = subprocess.run(
+            list(argv),
+            shell=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=merged_env,
+            cwd=None if cwd is None else str(cwd),
+        )
+    except subprocess.TimeoutExpired as exc:
+        def as_text(value: str | bytes | None) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value
+
+        elapsed = time.monotonic() - start
+        stderr = as_text(exc.stderr)
+        timeout_text = f"command timed out after {exc.timeout:g} seconds"
+        stderr = f"{stderr.rstrip()}\n{timeout_text}" if stderr else timeout_text
+        return CommandResult(
+            argv=tuple(str(item) for item in argv),
+            returncode=124,
+            stdout=as_text(exc.stdout),
+            stderr=stderr,
+            duration_seconds=elapsed,
+        )
     return CommandResult(
         argv=tuple(str(item) for item in argv),
         returncode=completed.returncode,
@@ -212,11 +232,19 @@ def bench_command(
     input_length: int,
     output_length: int,
     result_relative_path: Path,
+    model_revision: str,
 ) -> tuple[str, ...]:
     if input_length <= 0 or output_length <= 0:
         raise ValueError("benchmark lengths must be positive")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", model_revision):
+        raise ValueError("benchmark model_revision must be a 40-character commit hash")
     result_path = _container_result_path(project_root, result_relative_path)
     result_directory, result_filename = result_path.rsplit("/", 1)
+    model_cache_name = "models--" + profile.model.model_id.replace("/", "--")
+    tokenizer_path = (
+        f"/workspace/autokv-skip/.cache/huggingface/hub/{model_cache_name}/"
+        f"snapshots/{model_revision.lower()}"
+    )
     return (
         "docker",
         "run",
@@ -227,6 +255,10 @@ def bench_command(
         "all",
         "-e",
         COMPATIBILITY_ENV,
+        "-e",
+        "HF_HOME=/workspace/autokv-skip/.cache/huggingface",
+        "-e",
+        "HF_TOKEN",
         "--label",
         PROJECT_LABEL,
         "-v",
@@ -246,6 +278,10 @@ def bench_command(
         "/v1/completions",
         "--model",
         profile.model.model_id,
+        "--tokenizer",
+        tokenizer_path,
+        "--seed",
+        str(profile.seed),
         "--dataset-name",
         "random",
         "--random-input-len",
@@ -256,6 +292,15 @@ def bench_command(
         str(profile.benchmark.num_prompts),
         "--request-rate",
         "inf",
+        "--temperature",
+        "0",
+        "--num-warmups",
+        "1",
+        "--ignore-eos",
+        "--percentile-metrics",
+        "ttft,tpot,itl,e2el",
+        "--metric-percentiles",
+        "90,99",
         "--save-result",
         "--result-dir",
         result_directory,

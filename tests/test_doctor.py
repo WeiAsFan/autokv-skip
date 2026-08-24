@@ -14,6 +14,7 @@ from autokv.doctor import (
     parse_gpu_csv,
     parse_hf_revision,
     parse_image_inspect,
+    pull_with_retry,
     validate_host,
 )
 
@@ -40,6 +41,27 @@ class DoctorTests(unittest.TestCase):
     def test_classifies_auth_and_disk_pull_failures(self):
         self.assertEqual(classify_pull_failure("unauthorized: access denied"), "auth")
         self.assertEqual(classify_pull_failure("no space left on device"), "disk")
+
+    def test_image_pull_retries_three_times_with_exponential_backoff(self):
+        calls = []
+        delays = []
+
+        def runner(argv, timeout=None):
+            calls.append(tuple(argv))
+            if len(calls) < 3:
+                return CommandResult(tuple(argv), 1, "", "TLS timeout", 0.01)
+            return CommandResult(tuple(argv), 0, "pulled", "", 0.01)
+
+        results = pull_with_retry(
+            runner,
+            ("docker", "pull", "example:v1"),
+            timeout=10,
+            sleep=delays.append,
+        )
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([result.returncode for result in results], [1, 1, 0])
+        self.assertEqual(delays, [1.0, 2.0])
 
     def test_reads_immutable_hugging_face_revision(self):
         self.assertEqual(parse_hf_revision({"sha": "a" * 40}), "a" * 40)

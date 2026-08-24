@@ -46,6 +46,9 @@ class DocumentationTests(unittest.TestCase):
             "tmux",
             "SSH",
             "至少 80 GiB",
+            "最多尝试 3 次",
+            "最多重启 2 次",
+            "quality_mode",
         ):
             self.assertIn(phrase, text)
 

@@ -396,10 +396,17 @@ def _artifact_record(root: Path, path: Path) -> dict[str, str]:
     return {"path": _relative(root, path), "sha256": sha256_file(path)}
 
 
-def _mean_quality(path: Path) -> float:
+def _mean_quality(path: Path, expected_mode: str | None = None) -> float:
     rows = read_jsonl(path)
     if not rows:
         raise ValueError(f"quality artifact is empty: {path}")
+    modes = {row.get("quality_mode") for row in rows}
+    if modes - {"nll", "edit_distance"} or len(modes) != 1:
+        raise ValueError(f"quality artifact mixes or omits scoring mode: {path}")
+    if expected_mode is not None and modes != {expected_mode}:
+        raise ValueError(
+            f"quality artifact does not use locked {expected_mode} mode: {path}"
+        )
     try:
         return statistics.fmean(float(row["quality_score"]) for row in rows)
     except (KeyError, TypeError, ValueError) as exc:
@@ -421,7 +428,10 @@ def _smoke_is_complete(context: RuntimeContext) -> bool:
             if not isinstance(artifact, Mapping):
                 return False
             _verified_path(context.root, artifact.get("path"), artifact.get("sha256"))
-        return payload.get("deterministic") is True
+        return (
+            payload.get("deterministic") is True
+            and payload.get("quality_mode") in {"nll", "edit_distance"}
+        )
     except (OSError, TypeError, ValueError):
         return False
 
@@ -459,14 +469,18 @@ def run_smoke(context: RuntimeContext, port: int) -> dict[str, Any]:
         "output_text": first.get("output_text") == second.get("output_text"),
         "output_tokens": first.get("output_tokens") == second.get("output_tokens"),
         "capacity_tokens": first_capacity == second_capacity,
+        "quality_mode": first.get("quality_mode") == second.get("quality_mode")
+        and first.get("quality_mode") in {"nll", "edit_distance"},
     }
     deterministic = all(fields.values())
+    quality_mode = first.get("quality_mode") if fields["quality_mode"] else None
     payload = {
         "schema_version": 1,
         "complete": deterministic,
         "deterministic": deterministic,
         "run_id": context.run_id,
         "comparison": fields,
+        "quality_mode": quality_mode,
         "capacity_tokens": [first_capacity, second_capacity],
         "first": _artifact_record(context.root, first_path),
         "second": _artifact_record(context.root, second_path),
@@ -501,16 +515,32 @@ def _require_smoke(context: RuntimeContext) -> None:
         )
 
 
-def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
+def _locked_quality_mode(context: RuntimeContext) -> str:
     _require_smoke(context)
+    payload = read_json(_smoke_path(context))
+    if not isinstance(payload, Mapping):
+        raise ValueError("smoke manifest is malformed")
+    mode = payload.get("quality_mode")
+    if mode not in {"nll", "edit_distance"}:
+        raise ValueError("smoke manifest has no locked quality mode")
+    return str(mode)
+
+
+def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
+    quality_mode = _locked_quality_mode(context)
     cases = _load_cases(context.root, context.profile, "probe")
-    runner = ExperimentRunner(context.profile, context.root, context.lock)
+    runner = ExperimentRunner(
+        context.profile,
+        context.root,
+        context.lock,
+        quality_mode=quality_mode,
+    )
     artifacts: dict[str, dict[str, str]] = {}
     baseline_path = runner.run_variant(
         Variant.fp8(), cases, phase="probe", run_id=context.run_id, port=port
     )
     artifacts["fp8"] = _artifact_record(context.root, baseline_path)
-    baseline = _mean_quality(baseline_path)
+    baseline = _mean_quality(baseline_path, quality_mode)
     group_scores: dict[str, float] = {}
 
     if context.profile.selection.mode == "coarse_to_fine":
@@ -523,7 +553,7 @@ def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
             )
             artifacts[variant.name] = _artifact_record(context.root, path)
             groups_by_name[variant.name] = variant.skip_layers
-            group_scores[variant.name] = _mean_quality(path) - baseline
+            group_scores[variant.name] = _mean_quality(path, quality_mode) - baseline
         tuple_scores = {
             groups_by_name[name]: score for name, score in group_scores.items()
         }
@@ -542,7 +572,7 @@ def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
             variant, cases, phase="probe", run_id=context.run_id, port=port
         )
         artifacts[variant.name] = _artifact_record(context.root, path)
-        layer_scores[layer] = _mean_quality(path) - baseline
+        layer_scores[layer] = _mean_quality(path, quality_mode) - baseline
     auto_layers = select_top_layers(layer_scores, context.profile.selection.k)
     auto_path = runner.run_variant(
         Variant.mixed("auto-4", auto_layers),
@@ -558,6 +588,7 @@ def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
         "run_id": context.run_id,
         "profile": context.profile.name,
         "dataset_hash": context.dataset_hash,
+        "quality_mode": quality_mode,
         "baseline_quality": baseline,
         "selected_groups": [list(group) for group in selected_groups],
         "candidate_layers": list(candidate_layers),
@@ -580,8 +611,11 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
     index = read_json(index_path)
     if not isinstance(index, Mapping) or index.get("complete") is not True:
         raise IncompleteDataError("probe index is incomplete")
+    quality_mode = _locked_quality_mode(context)
     if index.get("dataset_hash") != context.dataset_hash:
         raise ValueError("probe index dataset hash differs from this run")
+    if index.get("quality_mode") != quality_mode:
+        raise ValueError("probe index quality mode differs from the smoke lock")
     artifact_index = index.get("artifacts")
     if not isinstance(artifact_index, Mapping):
         raise ValueError("probe index has no artifact map")
@@ -591,7 +625,7 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
     baseline_path = _verified_path(
         context.root, baseline_record.get("path"), baseline_record.get("sha256")
     )
-    baseline = _mean_quality(baseline_path)
+    baseline = _mean_quality(baseline_path, quality_mode)
     candidate_layers_raw = index.get("candidate_layers")
     if not isinstance(candidate_layers_raw, list):
         raise ValueError("probe index has no candidate layer list")
@@ -602,7 +636,7 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
         if not isinstance(record, Mapping):
             raise ValueError(f"probe artifact missing for layer {layer}")
         path = _verified_path(context.root, record.get("path"), record.get("sha256"))
-        layer_scores[layer] = _mean_quality(path) - baseline
+        layer_scores[layer] = _mean_quality(path, quality_mode) - baseline
     auto_layers = select_top_layers(layer_scores, context.profile.selection.k)
     if list(auto_layers) != index.get("auto_layers"):
         raise ValueError("probe auto layer decision does not reproduce from artifacts")
@@ -627,6 +661,7 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
         "run_id": context.run_id,
         "profile": context.profile.name,
         "dataset_hash": context.dataset_hash,
+        "quality_mode": quality_mode,
         "selection_scope": (
             "two-best-groups/eight-layers"
             if context.profile.selection.mode == "coarse_to_fine"
@@ -658,6 +693,8 @@ def _load_selection(context: RuntimeContext) -> Mapping[str, Any]:
         raise IncompleteDataError("selection is incomplete")
     if selection.get("run_id") != context.run_id:
         raise ValueError("selection run ID does not match current immutable inputs")
+    if selection.get("quality_mode") != _locked_quality_mode(context):
+        raise ValueError("selection quality mode differs from the smoke lock")
     return selection
 
 
@@ -685,10 +722,15 @@ def _quality_variants(selection: Mapping[str, Any]) -> tuple[Variant, ...]:
 
 
 def run_evaluate(context: RuntimeContext, port: int) -> dict[str, Any]:
-    _require_smoke(context)
+    quality_mode = _locked_quality_mode(context)
     selection = _load_selection(context)
     cases = _load_cases(context.root, context.profile, "final")
-    runner = ExperimentRunner(context.profile, context.root, context.lock)
+    runner = ExperimentRunner(
+        context.profile,
+        context.root,
+        context.lock,
+        quality_mode=quality_mode,
+    )
     artifacts = {}
     for variant in _quality_variants(selection):
         path = runner.run_variant(
@@ -704,6 +746,7 @@ def run_evaluate(context: RuntimeContext, port: int) -> dict[str, Any]:
         "complete": True,
         "run_id": context.run_id,
         "dataset_hash": context.dataset_hash,
+        "quality_mode": quality_mode,
         "samples_per_configuration": len(cases),
         "configurations": len(artifacts),
         "artifacts": artifacts,
@@ -740,6 +783,7 @@ def run_benchmark(context: RuntimeContext, port: int) -> dict[str, Any]:
 
 def run_report(context: RuntimeContext) -> dict[str, Any]:
     selection = _load_selection(context)
+    quality_mode = _locked_quality_mode(context)
     quality_index_path = context.root / "runs" / context.run_id / "quality" / "index.json"
     perf_index_path = context.root / "runs" / context.run_id / "perf" / "index.json"
     if not quality_index_path.is_file() or not perf_index_path.is_file():
@@ -750,6 +794,8 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
         raise IncompleteDataError("quality index is incomplete")
     if not isinstance(perf_index, Mapping) or perf_index.get("complete") is not True:
         raise IncompleteDataError("performance index is incomplete")
+    if quality_index.get("quality_mode") != quality_mode:
+        raise ValueError("quality index differs from the locked scoring mode")
     quality_records = quality_index.get("artifacts")
     summary_records = perf_index.get("summaries")
     if not isinstance(quality_records, Mapping) or not isinstance(summary_records, Mapping):
@@ -759,7 +805,9 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
         if not isinstance(name, str) or not isinstance(record, Mapping):
             raise ValueError("quality artifact index is malformed")
         path = _verified_path(context.root, record.get("path"), record.get("sha256"))
-        quality[name] = read_jsonl(path)
+        rows = read_jsonl(path)
+        _mean_quality(path, quality_mode)
+        quality[name] = rows
     capacities: dict[str, Capacity] = {}
     performance: dict[str, Mapping[str, Any]] = {}
     for name, record in summary_records.items():
@@ -799,6 +847,7 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
         "schema_version": 1,
         "complete": True,
         "run_id": context.run_id,
+        "quality_mode": quality_mode,
         "artifacts": {
             name: _artifact_record(context.root, path) for name, path in artifacts.items()
         },

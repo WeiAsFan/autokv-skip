@@ -20,7 +20,12 @@ from autokv.commands import (
     server_command,
 )
 from autokv.config import Profile
-from autokv.experiment import safe_stop_container, validate_server_log
+from autokv.experiment import (
+    MAX_TIMEOUT_RESTARTS,
+    safe_remove_stale_container,
+    safe_stop_container,
+    validate_server_log,
+)
 from autokv.io import (
     atomic_write_json,
     atomic_write_text,
@@ -223,6 +228,7 @@ class BenchmarkRunner:
                         case.input_length,
                         case.output_length,
                         raw_path.relative_to(self.project_root),
+                        model_revision,
                     )
                 )
             )
@@ -247,6 +253,7 @@ class BenchmarkRunner:
         scenarios: list[dict[str, Any]] = []
         capacity: Capacity | None = None
         try:
+            safe_remove_stale_container(name, self.command_runner)
             start_result = self.command_runner(server_argv, timeout=120)
             if not start_result.ok:
                 raise RuntimeError(
@@ -270,17 +277,27 @@ class BenchmarkRunner:
                 reusable = False
                 if raw_path.is_file():
                     try:
-                        reusable = isinstance(read_json(raw_path), Mapping)
-                    except (OSError, ValueError):
+                        cached_payload = read_json(raw_path)
+                        reusable = isinstance(cached_payload, Mapping)
+                        if reusable:
+                            extract_performance_metrics(cached_payload)
+                    except (OSError, TypeError, ValueError):
                         reusable = False
                 if not reusable:
-                    result = self.command_runner(tuple(argv), timeout=3600)
-                    if not result.ok:
-                        raise RuntimeError(
-                            "vllm bench serve failed for "
-                            f"input={case.input_length}, output={case.output_length}, "
-                            f"repeat={case.repeat}: {result.stderr[-1000:]}"
-                        )
+                    for attempt in range(MAX_TIMEOUT_RESTARTS + 1):
+                        result = self.command_runner(tuple(argv), timeout=3600)
+                        if result.ok:
+                            break
+                        if (
+                            result.returncode != 124
+                            or attempt >= MAX_TIMEOUT_RESTARTS
+                        ):
+                            raise RuntimeError(
+                                "vllm bench serve failed for "
+                                f"input={case.input_length}, "
+                                f"output={case.output_length}, "
+                                f"repeat={case.repeat}: {result.stderr[-1000:]}"
+                            )
                 if not raw_path.is_file():
                     raise ValueError(f"benchmark result was not created: {raw_path}")
                 payload = read_json(raw_path)

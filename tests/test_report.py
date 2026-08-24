@@ -48,7 +48,18 @@ class ReportTests(unittest.TestCase):
             "auto-4": Capacity(230000, 32768, 7.02),
         }
         performance = {
-            "bf16": {"request_throughput": 1.0, "median_ttft_ms": 100.0},
+            "bf16": {
+                "request_throughput": 1.0,
+                "output_throughput": 32.0,
+                "median_ttft_ms": 100.0,
+                "p99_ttft_ms": 150.0,
+                "median_tpot_ms": 8.0,
+                "p99_tpot_ms": 12.0,
+                "median_itl_ms": 7.0,
+                "p99_itl_ms": 11.0,
+                "median_e2el_ms": 400.0,
+                "p99_e2el_ms": 600.0,
+            },
             "fp8": {"request_throughput": 0.95, "median_ttft_ms": 110.0},
             "auto-4": {"request_throughput": 0.97, "median_ttft_ms": 106.0},
         }
@@ -80,6 +91,11 @@ class ReportTests(unittest.TestCase):
             self.assertIn("2, 7, 18, 29", markdown)
             self.assertIn("A6000 不具备原生 FP8 Tensor Core", markdown)
             self.assertIn("Gap recovery", markdown)
+            self.assertIn("Median TPOT", markdown)
+            self.assertIn("P99 ITL", markdown)
+            summary_csv = artifacts["csv"].read_text(encoding="utf-8")
+            self.assertIn("output_throughput", summary_csv.splitlines()[0])
+            self.assertIn("p99_e2el_ms", summary_csv.splitlines()[0])
 
 
 if __name__ == "__main__":

@@ -54,8 +54,10 @@ class BenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = []
+            timed_out_once = False
 
             def fake_runner(argv, timeout=None, **kwargs):
+                nonlocal timed_out_once
                 calls.append(tuple(argv))
                 if tuple(argv[:2]) == ("docker", "logs"):
                     return command_result(
@@ -68,8 +70,15 @@ class BenchmarkTests(unittest.TestCase):
                         ),
                     )
                 if tuple(argv[:2]) == ("docker", "inspect"):
+                    if "State.Running" in " ".join(argv):
+                        return command_result(
+                            argv, returncode=1, stderr="No such object"
+                        )
                     return command_result(argv, stdout="autokv-skip\n")
                 if "bench" in argv:
+                    if not timed_out_once:
+                        timed_out_once = True
+                        return command_result(argv, returncode=124, stderr="timed out")
                     container_dir = argv[argv.index("--result-dir") + 1]
                     filename = argv[argv.index("--result-filename") + 1]
                     relative = Path(
@@ -98,8 +107,14 @@ class BenchmarkTests(unittest.TestCase):
                 command_runner=fake_runner,
                 client_factory=lambda base_url, model_id: FakeClient(),
             )
+            variant = Variant.mixed("auto-4", (2, 7, 18, 29))
+            _, _, _, result_directory = runner._paths("abc123", variant)
+            result_directory.mkdir(parents=True, exist_ok=True)
+            (result_directory / "in1024-out32-rep0.json").write_text(
+                "{}", encoding="utf-8"
+            )
             summary_path = runner.run_variant(
-                Variant.mixed("auto-4", (2, 7, 18, 29)),
+                variant,
                 run_id="abc123",
                 port=8000,
             )
@@ -108,10 +123,12 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(summary["capacity"]["tokens"], 233104)
             self.assertEqual(len(summary["scenarios"]), 6)
             self.assertEqual(summary["aggregate"]["request_throughput"], 2.5)
+            bench_calls = [call for call in calls if "bench" in call]
+            self.assertEqual(len(bench_calls), 7)
             call_count = len(calls)
             self.assertEqual(
                 runner.run_variant(
-                    Variant.mixed("auto-4", (2, 7, 18, 29)),
+                    variant,
                     run_id="abc123",
                     port=8000,
                 ),

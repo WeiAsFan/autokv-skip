@@ -10,6 +10,8 @@ AutoKV-Skip 是一个面向单张 NVIDIA RTX A6000 48 GiB 的小型 vLLM 推理�
 4. 与 BF16、全 FP8、5 个 Random-4、First-4、Last-4、Inverted-4 公平对比；
 5. 输出质量、KV token capacity、吞吐、TTFT、CSV 和 SVG 报告。
 
+正式流程还会在双启动 smoke 中全局锁定 NLL 或编辑距离评分模式；Docker pull 最多指数退避尝试 3 次，请求超时只重启同一配置且最多 2 次，避免瞬时故障改变实验条件。
+
 ## 冻结实验
 
 | 项目 | 固定值 |
@@ -64,7 +66,7 @@ python3 -m autokv smoke --profile quick --json
 python3 -m autokv run --profile quick --json
 ```
 
-`run` 可断点续跑。完成且 SHA-256、行数和状态文件一致的配置不会重跑；它只会管理带有 `io.autokv.project=autokv-skip` label 的精确容器。
+`run` 可断点续跑。完成且 SHA-256、行数和状态文件一致的配置不会重跑；它只会管理带有 `io.autokv.project=autokv-skip` label 的精确容器。主机重启留下的同名 `Exited` 容器会在核验 label 后自动移除；同名容器仍运行或属于其他项目时则拒绝操作。
 
 ## 产物
 

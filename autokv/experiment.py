@@ -33,6 +33,8 @@ from autokv.selection import Variant, canonical_config_id
 
 Runner = Callable[..., CommandResult]
 ClientFactory = Callable[[str, str], Any]
+QUALITY_MODES = frozenset(("auto", "nll", "edit_distance"))
+MAX_TIMEOUT_RESTARTS = 2
 
 
 def canonical_run_id(
@@ -111,6 +113,36 @@ def safe_stop_container(name: str, runner: Runner = run_command) -> None:
         raise RuntimeError(f"failed to remove stopped AutoKV-Skip container: {name}")
 
 
+def safe_remove_stale_container(name: str, runner: Runner = run_command) -> None:
+    """Remove only an exited container that is provably owned by this project."""
+    inspect_argv = (
+        "docker",
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "io.autokv.project" }}|{{ .State.Running }}',
+        name,
+    )
+    inspected = runner(inspect_argv, timeout=30)
+    if not inspected.ok:
+        return
+    fields = inspected.stdout.strip().split("|")
+    if len(fields) != 2:
+        raise RuntimeError(f"cannot parse existing container ownership/state: {name}")
+    project, running = fields
+    if project != "autokv-skip":
+        raise RuntimeError(f"refusing to remove foreign container: {name}")
+    if running == "true":
+        raise RuntimeError(
+            f"AutoKV-Skip container is already running: {name}; "
+            "stop the concurrent/stale run explicitly before retrying"
+        )
+    if running != "false":
+        raise RuntimeError(f"cannot determine existing container state: {name}")
+    removed = runner(("docker", "rm", name), timeout=30)
+    if not removed.ok:
+        raise RuntimeError(f"failed to remove stale AutoKV-Skip container: {name}")
+
+
 def _completion_text(response: Mapping[str, Any]) -> str:
     try:
         text = response["choices"][0]["text"]
@@ -130,6 +162,7 @@ class ExperimentRunner:
         *,
         command_runner: Runner = run_command,
         client_factory: ClientFactory | None = None,
+        quality_mode: str = "auto",
     ) -> None:
         self.profile = profile
         self.project_root = project_root.resolve()
@@ -138,6 +171,9 @@ class ExperimentRunner:
         self.client_factory = client_factory or (
             lambda base_url, model_id: VllmClient(base_url, model_id)
         )
+        if quality_mode not in QUALITY_MODES:
+            raise ValueError(f"quality_mode must be one of {sorted(QUALITY_MODES)}")
+        self.quality_mode = quality_mode
         for key in ("image_ref", "image_digest", "model_revision"):
             if not isinstance(lock.get(key), str) or not lock[key]:
                 raise ValueError(f"environment lock is missing {key}")
@@ -166,7 +202,53 @@ class ExperimentRunner:
         result = self.command_runner(("docker", "logs", name), timeout=60)
         return result.stdout + result.stderr
 
+    def _validate_quality_modes(
+        self, rows: Sequence[Mapping[str, Any]], artifact: Path
+    ) -> None:
+        if not rows:
+            return
+        observed = {row.get("quality_mode") for row in rows}
+        if not observed.issubset({"nll", "edit_distance"}):
+            raise ValueError(f"artifact has missing/invalid quality mode: {artifact}")
+        if len(observed) > 1:
+            raise ValueError(f"artifact mixes quality modes: {artifact}")
+        if self.quality_mode != "auto" and observed != {self.quality_mode}:
+            raise ValueError(
+                f"artifact quality mode differs from locked {self.quality_mode}: {artifact}"
+            )
+
+    @staticmethod
+    def _is_timeout(exc: BaseException) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+        return isinstance(exc, VllmHttpError) and exc.status is None and any(
+            token in exc.body.lower() for token in ("timeout", "timed out")
+        )
+
     def run_variant(
+        self,
+        variant: Variant,
+        cases: Sequence[NiahCase],
+        *,
+        phase: str,
+        run_id: str,
+        port: int,
+    ) -> Path:
+        for restart in range(MAX_TIMEOUT_RESTARTS + 1):
+            try:
+                return self._run_variant_once(
+                    variant,
+                    cases,
+                    phase=phase,
+                    run_id=run_id,
+                    port=port,
+                )
+            except (TimeoutError, VllmHttpError) as exc:
+                if not self._is_timeout(exc) or restart >= MAX_TIMEOUT_RESTARTS:
+                    raise
+        raise AssertionError("timeout restart loop exhausted without returning")
+
+    def _run_variant_once(
         self,
         variant: Variant,
         cases: Sequence[NiahCase],
@@ -183,9 +265,14 @@ class ExperimentRunner:
         )
         expected_rows = len(cases)
         if is_complete(state_path, artifact, expected_rows):
+            self._validate_quality_modes(read_jsonl(artifact), artifact)
             return artifact
 
         existing_rows = read_jsonl(artifact) if artifact.exists() else []
+        self._validate_quality_modes(existing_rows, artifact)
+        active_quality_mode = self.quality_mode
+        if active_quality_mode == "auto" and existing_rows:
+            active_quality_mode = str(existing_rows[0]["quality_mode"])
         completed_ids = {row.get("sample_id") for row in existing_rows}
         if len(completed_ids) != len(existing_rows):
             raise ValueError(f"partial artifact has duplicate sample IDs: {artifact}")
@@ -215,6 +302,7 @@ class ExperimentRunner:
                 },
                 "image_ref": image_ref,
                 "model_revision": model_revision,
+                "quality_mode": self.quality_mode,
             },
         )
 
@@ -223,6 +311,7 @@ class ExperimentRunner:
         completed = False
         captured_log = ""
         try:
+            safe_remove_stale_container(name, self.command_runner)
             start_result = self.command_runner(argv, timeout=120)
             if not start_result.ok:
                 raise RuntimeError(
@@ -249,11 +338,34 @@ class ExperimentRunner:
                 expected = expected_answer(case.code)
                 generation = score_generation(output, expected)
                 answer_prefix = materialized.prompt + "\n\nAnswer: "
-                try:
-                    echo = client.echo_logprobs(answer_prefix + expected)
-                    answer_nll = answer_nll_from_echo(echo, len(answer_prefix))
-                except (VllmHttpError, ValueError):
+                if active_quality_mode == "edit_distance":
                     answer_nll = None
+                    quality_mode = "edit_distance"
+                else:
+                    try:
+                        echo = client.echo_logprobs(answer_prefix + expected)
+                        answer_nll = answer_nll_from_echo(echo, len(answer_prefix))
+                    except VllmHttpError as exc:
+                        if active_quality_mode == "nll" or exc.status not in {
+                            400,
+                            404,
+                            405,
+                            422,
+                        }:
+                            raise
+                        answer_nll = None
+                    except ValueError:
+                        if active_quality_mode == "nll":
+                            raise
+                        answer_nll = None
+                    if active_quality_mode == "nll" and answer_nll is None:
+                        raise ValueError(
+                            "NLL quality mode was locked by smoke, but echo logprobs "
+                            "were missing; stop instead of mixing scoring functions"
+                        )
+                    quality_mode = "nll" if answer_nll is not None else "edit_distance"
+                    if active_quality_mode == "auto":
+                        active_quality_mode = quality_mode
                 q_score = quality_score(
                     generation.exact_match,
                     answer_nll,
@@ -287,6 +399,7 @@ class ExperimentRunner:
                         "exact_match": generation.exact_match,
                         "edit_distance": generation.edit_distance,
                         "answer_nll": answer_nll,
+                        "quality_mode": quality_mode,
                         "quality_score": q_score,
                         "e2e_ms": elapsed_ms,
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),

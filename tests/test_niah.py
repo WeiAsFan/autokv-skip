@@ -13,7 +13,8 @@ class NiahTests(unittest.TestCase):
 
     def test_fit_prompt_is_deterministic_and_within_half_percent(self):
         case = NiahCase("case-1", 2000, 0.5, 42, "ZEBRA-4821")
-        count_tokens = lambda text: len(text.split())
+        def count_tokens(text):
+            return len(text.split())
         first = fit_prompt(case, count_tokens)
         second = fit_prompt(case, count_tokens)
         self.assertEqual(first, second)

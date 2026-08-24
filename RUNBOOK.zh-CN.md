@@ -390,7 +390,7 @@ python3 -m json.tool runs/_environment/lock.json | sed -n '1,160p'
 ### 失败分支
 
 1. `host does not match`：回到阶段 2；不要修改 profile 或驱动。
-2. Docker pull 的 network/auth/disk 分类：修复网络、登录或磁盘，然后运行同一 doctor；这些错误不会触发版本回退。
+2. Docker pull 会按 1 秒、2 秒指数退避最多尝试 3 次；三次都失败后才按 network/auth/disk 分类停止。修复网络、登录或磁盘后运行同一 doctor；这些错误不会触发版本回退。
 3. 主镜像 CUDA/PTX/feature probe 失败：程序只在允许的兼容类别下自动尝试 `v0.19.1`；不要手工强制回退。
 4. 两个镜像都失败：执行诊断命令，停止 GPU 流程：
 
@@ -546,7 +546,7 @@ python3 scripts/verify.py
 
 ## 阶段 9：10 分钟级双启动 FP8 smoke
 
-smoke 会从干净 engine 独立启动相同 FP8 配置两次，发送同一 1024-token NIAH 请求，并比较输出文本、output token 数和日志解析出的 KV token capacity。任一不一致都禁止层排序。
+smoke 会从干净 engine 独立启动相同 FP8 配置两次，发送同一 1024-token NIAH 请求，并比较输出文本、output token 数、日志解析出的 KV token capacity 和质量评分模式。若两次都能得到可靠 echo logprobs，就把全实验锁为 `nll`；若两次都不能，就把全实验锁为 `edit_distance`。任一不一致都禁止层排序，后续配置绝不混用两种质量函数。
 
 ### 命令
 
@@ -582,14 +582,15 @@ grep -RHiE 'FLASHINFER|FP8|GPU KV cache size|Maximum concurrency' runs/*/smoke-*
 
 ### 成功判据
 
-退出码 0；`smoke.json` 中 `complete=true`、`deterministic=true`，三个 comparison 字段都为 true，两次 capacity 完全相等；两次日志都确认 FlashInfer、FP8 KV 和容量。
+退出码 0；`smoke.json` 中 `complete=true`、`deterministic=true`，四个 comparison 字段都为 true，`quality_mode` 只能是 `nll` 或 `edit_distance`，两次 capacity 完全相等；两次日志都确认 FlashInfer、FP8 KV 和容量。
 
 ### 失败分支
 
 1. 退出码 4/超时：查看两个 smoke server log 和 Docker 状态，执行 diagnose，然后重跑同一 smoke；不要进入 probe。
 2. OOM：确认没有其他 GPU 进程；不要降低固定 16G KV 预算来伪造主实验。
 3. backend/dtype 日志缺失：当作硬失败；不要只相信 CLI 参数。
-4. 两次结果不一致：MVP 的随机 token scale 不稳定。执行以下精确命令收集 dataset-calibrated KV-only scales 扩展所需输入，然后停止本 run：
+4. 两次评分模式不同：endpoint 的 NLL 能力不稳定，停止；不得让部分配置用 NLL、部分配置用编辑距离。
+5. 两次输出或容量不一致：MVP 的随机 token scale 不稳定。执行以下精确命令收集 dataset-calibrated KV-only scales 扩展所需输入，然后停止本 run：
 
 ```bash
 python3 -m autokv diagnose --project-root "$AUTOKV_ROOT" --profile quick --json
@@ -647,7 +648,7 @@ tmux session 存在；最终 `quick_run_exit=0`；`run` JSON 的 `complete=true`
 
 1. `tmux: command not found`：让管理员安装 tmux，或使用组织认可的持久会话工具；不要在普通 SSH 前台冒险跑数小时任务。
 2. 8000 端口被占：用 `ss -ltnp | grep ':8000'` 查明所有者。若是外部服务，整次实验统一改为 `--port 18000`；不要结束未知进程。
-3. 某配置失败：`run` 保存已完成配置。不要删 `runs/`；进入阶段 11 诊断，然后以同 profile、root、port 重跑。
+3. 某次请求超时：控制器会停止并重启同一个精确配置，最多重启 2 次，并复用已经校验的样本行；仍失败才退出。不要删 `runs/`；进入阶段 11 诊断，然后以同 profile、root、port 重跑。
 4. 不要开第二个 quick 进程；单卡并发运行会破坏显存和性能公平性。
 
 ---
@@ -710,9 +711,10 @@ status 的已完成步骤逐步变为 true；不存在两个带项目 label 的�
 ### 失败分支
 
 1. SSH 断开：重新登录，重设阶段 1 的变量和阶段 4 的可选 token，再 attach tmux；不需要重跑已完成配置。
-2. 主机重启导致容器停止：先确认无残留 AutoKV 容器，再执行同一 `run`。状态 SHA/行数不完整的精确配置会续跑。
-3. 有外部容器：控制器会检查 label，拒绝停止非本项目容器。不要手工使用模糊容器名批量停止。
-4. 单个 JSONL 被手工编辑后 hash 不符：保留证据并生成 diagnose；不要伪造 state hash。
+2. 主机重启导致容器停止：执行同一 `run`。控制器只会在确认精确同名容器带 `io.autokv.project=autokv-skip` label 且状态为 `Exited` 后自动 `docker rm`；状态 SHA/行数不完整的精确配置随后续跑。
+3. 精确同名 AutoKV 容器仍在运行：控制器会拒绝启动第二份。先用上面的 `docker ps` 和 `docker logs` 判断它是否仍是有效任务；不要盲目停止并行实验。
+4. 有外部容器：控制器会检查 label，拒绝停止或移除非本项目容器。不要手工使用模糊容器名批量停止。
+5. 单个 JSONL 被手工编辑后 hash 不符：保留证据并生成 diagnose；不要伪造 state hash。
 
 ---
 

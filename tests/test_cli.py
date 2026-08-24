@@ -258,6 +258,33 @@ class CliTests(unittest.TestCase):
                 "--json",
             )
             run_id = json.loads(status.stdout)["run_id"]
+            smoke_dir = root / "runs" / run_id / "smoke"
+            smoke_dir.mkdir(parents=True)
+            smoke_records = []
+            for name in ("first", "second"):
+                path = smoke_dir / f"{name}.jsonl"
+                path.write_text(
+                    json.dumps({"quality_mode": "edit_distance"}) + "\n",
+                    encoding="utf-8",
+                )
+                smoke_records.append(
+                    {
+                        "path": path.relative_to(root).as_posix(),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                )
+            (smoke_dir / "smoke.json").write_text(
+                json.dumps(
+                    {
+                        "complete": True,
+                        "deterministic": True,
+                        "quality_mode": "edit_distance",
+                        "first": smoke_records[0],
+                        "second": smoke_records[1],
+                    }
+                ),
+                encoding="utf-8",
+            )
             probe_dir = root / "runs" / run_id / "probe"
             probe_dir.mkdir(parents=True)
             artifacts = {}
@@ -265,7 +292,14 @@ class CliTests(unittest.TestCase):
             def add_artifact(name: str, quality: float):
                 path = probe_dir / f"{name}.jsonl"
                 path.write_text(
-                    json.dumps({"sample_id": "one", "quality_score": quality}) + "\n",
+                    json.dumps(
+                        {
+                            "sample_id": "one",
+                            "quality_mode": "edit_distance",
+                            "quality_score": quality,
+                        }
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
                 artifacts[name] = {
@@ -281,6 +315,7 @@ class CliTests(unittest.TestCase):
                     {
                         "complete": True,
                         "dataset_hash": made_payload["dataset_hash"],
+                        "quality_mode": "edit_distance",
                         "candidate_layers": list(range(8)),
                         "auto_layers": [4, 5, 6, 7],
                         "artifacts": artifacts,
@@ -300,6 +335,7 @@ class CliTests(unittest.TestCase):
             payload = json.loads(selected.stdout)
             self.assertEqual(payload["auto_layers"], [4, 5, 6, 7])
             self.assertEqual(payload["inverted_layers"], [0, 1, 2, 3])
+            self.assertEqual(payload["quality_mode"], "edit_distance")
             controls = [tuple(layers) for layers in payload["random_layers"]]
             self.assertEqual(len(set(controls)), 5)
             self.assertNotIn((4, 5, 6, 7), controls)
