@@ -663,7 +663,7 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
             "runs/<immutable-run-id>/quality/index.json",
             "runs/<immutable-run-id>/perf/index.json",
             "runs/<immutable-run-id>/perf/*.matrix.state.json",
-            "runs/<immutable-run-id>/report/report.zh-CN.md",
+            "runs/<immutable-run-id>/report/REPORT.zh-CN.md",
         ],
         "placeholder_notice": (
             "digest, revision, run ID, Auto layer IDs, and paths are illustrative; "

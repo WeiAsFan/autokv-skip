@@ -161,6 +161,10 @@ class CliTests(unittest.TestCase):
             "runs/<immutable-run-id>/perf/*.matrix.state.json",
             data["planned_artifacts"],
         )
+        self.assertIn(
+            "runs/<immutable-run-id>/report/REPORT.zh-CN.md",
+            data["planned_artifacts"],
+        )
         self.assertNotIn("docker was executed", result.stderr.lower())
 
     def test_full_dry_run_has_thirty_four_core_configurations(self):
