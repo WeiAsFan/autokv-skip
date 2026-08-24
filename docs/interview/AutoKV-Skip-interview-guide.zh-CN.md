@@ -249,9 +249,9 @@ PagedAttention优化逻辑 token 到物理 block 的分配、碎片和共享；K
 
 ### Q19：SSH 断了会怎样？
 
-正式运行放在 tmux。控制器把源码树 SHA-256 纳入 run ID，在 `run-manifest.json` 记录 Git 身份，并让 `completed-manifest.json` 哈希覆盖全部活跃产物。每阶段写入包含上游 hash 的状态，重跑同一 `run` 时只复用上下文、行模式和哈希都通过的产物；不一致则拒绝混跑。服务端和 benchmark 客户端都有确定性名称与项目 label，超时清理只针对精确容器。若必须修复损坏配置，`--force` 先把旧证据移到 `_superseded/`，不会删除。
+正式运行放在 tmux。控制器把运行源码树 SHA-256 纳入 run ID，在 `run-manifest.json` 保存 run-start Git 身份，并让 `completed-manifest.json` 哈希覆盖全部活跃产物。selection 不是信任保存的层号，而是从 probe hash 重新推导；benchmark 的 matrix state 同时锚定全部场景 raw JSON 与 dmon。重跑只复用上下文、实际 command/server log 和哈希都通过的产物，不一致则拒绝混跑。服务端和 benchmark 客户端都有确定性名称与项目 label；即使遥测停止报错，清理仍在独立 finally 路径中执行。若必须修复损坏配置，`--force` 先把旧证据移到 `_superseded/`，不会删除。
 
-我还验证了“运行的确实是想要的配置”：启动后读取 Docker 实际 `.Config.Cmd`；Auto-4 要在 DEBUG 日志中给出全部 32 层的有效 KV dtype，恰好 4 层是 `auto`、其余是 `fp8_e4m3`。性能不混合不同长度下结论，而是在相同 input/output 场景内比较，并同步保存只读 `nvidia-smi dmon` 功耗、利用率、时钟和显存轨迹。
+我还验证了“运行的确实是想要的配置”：启动后读取 Docker 实际 `.Config.Cmd`；BF16/FP8 都要求日志正向确认实际 dtype，而不是只排除 fallback；Auto-4 要在 DEBUG 日志中给出全部 32 层的有效 KV dtype，恰好 4 层是 `auto`、其余是 `fp8_e4m3`。性能不混合不同长度下结论，而是在相同 input/output 场景内比较，并同步保存只读 `nvidia-smi dmon` 功耗、利用率、时钟和显存轨迹。
 
 ### Q20：R535 和新 CUDA 镜像真的兼容吗？
 

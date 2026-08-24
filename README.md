@@ -66,7 +66,7 @@ python3 -m autokv smoke --profile quick --json
 python3 -m autokv run --profile quick --json
 ```
 
-`run` 可断点续跑。完成且 SHA-256、行数、上下文和状态文件一致的配置不会重跑；它只会管理带有 `io.autokv.project=autokv-skip` label 的精确容器。benchmark 客户端也有由目标结果路径生成的唯一容器名，超时后只清理这一客户端。主机重启留下的同名 `Exited` 容器会在核验 label 后自动移除；同名容器仍运行或属于其他项目时则拒绝操作。
+`run` 可断点续跑。完成且 SHA-256、行数、上下文、实际 command/server log 和状态文件一致的配置不会重跑；selection 每次会从 probe 证据重新推导，benchmark 只有在 matrix state 同时锚定全部 raw JSON 与 dmon 时才复用。控制器只管理带有 `io.autokv.project=autokv-skip` label 的精确容器；即使遥测停止失败或 `docker run -d` 超时，也会先核验所有权再清理。主机重启留下的同名 `Exited` 容器会在核验 label 后自动移除；同名容器仍运行或属于其他项目时则拒绝操作。
 
 若某个产物被手工改坏，控制器不会“洗白”它。先保留诊断，再从命令记录文件名取得 12 位配置 ID，仅对相应阶段执行 `--force CONFIG_ID`；旧证据会移动到可恢复的 `_superseded/`，不会删除。完整命令见运行手册阶段 11。
 
@@ -81,7 +81,7 @@ runs/<run-id>/run-manifest.json profile/data/image/model/源码树 SHA-256 与 G
 runs/<run-id>/probe/             组/层敏感度原始 JSONL
 runs/<run-id>/selection.json     Auto/随机/首尾/反向层集合
 runs/<run-id>/quality/           11 个配置的最终质量原始 JSONL
-runs/<run-id>/perf/              3 个主配置的容量、vllm bench JSON 与 dmon 日志
+runs/<run-id>/perf/              3 个主配置的容量、bench JSON、dmon 与 matrix state
 runs/<run-id>/report/            中文 Markdown、总表 CSV、逐场景 CSV、SVG
 runs/<run-id>/completed-manifest.json 全部活跃 run 产物的最终哈希清单
 runs/<run-id>/_superseded/       `--force` 前移入的可恢复旧证据

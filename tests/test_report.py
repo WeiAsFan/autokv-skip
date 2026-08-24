@@ -96,29 +96,41 @@ class ReportTests(unittest.TestCase):
                     }
                 ],
                 "capacity_validation": {
-                    "theoretical_tokens": 262144,
+                    "theoretical_tokens": 131072,
                     "measured_tokens": 131072,
-                    "relative_deviation": 0.5,
-                    "within_10_percent": False,
-                    "page_or_block_evidence": ["# GPU blocks: 8192"],
+                    "relative_deviation": 0.0,
+                    "within_10_percent": True,
+                    "runtime_evidence": ["GPU KV cache size: 131,072 tokens"],
+                    "alignment_evidence": [],
+                    "quantitative_explanations": [],
                     "evidence_complete": True,
                 },
+                "telemetry": {"path": "runs/r/perf/bf16.dmon.log", "sha256": "1" * 64},
+                "server_log": {"path": "runs/r/perf/bf16.server.log", "sha256": "2" * 64},
+                "matrix_state": {"path": "runs/r/perf/bf16.matrix.state.json", "sha256": "3" * 64},
             },
             "fp8": {
                 "overall_descriptive_mean": {"request_throughput": 0.95},
                 "scenario_groups": [{"input_length": 1024, "output_length": 32, "repeats": 1, "metrics": {"request_throughput": 0.95, "median_ttft_ms": 110.0}}],
-                "capacity_validation": {"theoretical_tokens": 524288, "measured_tokens": 260000, "relative_deviation": 0.504, "within_10_percent": False, "page_or_block_evidence": ["# GPU blocks: 16250"], "evidence_complete": True},
+                "capacity_validation": {"theoretical_tokens": 262144, "measured_tokens": 260000, "relative_deviation": 0.00818, "within_10_percent": True, "runtime_evidence": ["GPU KV cache size: 260,000 tokens"], "alignment_evidence": [], "quantitative_explanations": [], "evidence_complete": True},
+                "telemetry": {"path": "runs/r/perf/fp8.dmon.log", "sha256": "4" * 64},
+                "server_log": {"path": "runs/r/perf/fp8.server.log", "sha256": "5" * 64},
+                "matrix_state": {"path": "runs/r/perf/fp8.matrix.state.json", "sha256": "6" * 64},
             },
             "auto-4": {
                 "overall_descriptive_mean": {"request_throughput": 0.97},
                 "scenario_groups": [{"input_length": 1024, "output_length": 32, "repeats": 1, "metrics": {"request_throughput": 0.97, "median_ttft_ms": 106.0}}],
-                "capacity_validation": {"theoretical_tokens": 466033, "measured_tokens": 230000, "relative_deviation": 0.506, "within_10_percent": False, "page_or_block_evidence": ["# GPU blocks: 14375"], "evidence_complete": True},
+                "capacity_validation": {"theoretical_tokens": 233016, "measured_tokens": 230000, "relative_deviation": 0.01294, "within_10_percent": True, "runtime_evidence": ["GPU KV cache size: 230,000 tokens"], "alignment_evidence": [], "quantitative_explanations": [], "evidence_complete": True},
+                "telemetry": {"path": "runs/r/perf/auto-4.dmon.log", "sha256": "7" * 64},
+                "server_log": {"path": "runs/r/perf/auto-4.server.log", "sha256": "8" * 64},
+                "matrix_state": {"path": "runs/r/perf/auto-4.matrix.state.json", "sha256": "9" * 64},
             },
         }
         selection = {
             "auto_layers": [2, 7, 18, 29],
             "layer_scores": {"2": 0.2, "7": 0.3, "18": 0.1, "29": 0.4},
             "group_scores": {"group-00-03": 0.1, "group-04-07": 0.2},
+            "selection_scope": "two-best-groups/eight-layers",
             "source": {"tree_sha256": "b" * 64, "git_commit": "c" * 40, "git_dirty": False},
         }
         lock = {
@@ -152,6 +164,10 @@ class ReportTests(unittest.TestCase):
             self.assertIn("group-04-07", markdown)
             self.assertIn("理论 tokens", markdown)
             self.assertIn("bbbbbbbbbbbb", markdown)
+            self.assertIn("two-best-groups/eight-layers", markdown)
+            self.assertIn("bf16.server.log", markdown)
+            self.assertIn("bf16.dmon.log", markdown)
+            self.assertIn("bf16.matrix.state.json", markdown)
             summary_csv = artifacts["csv"].read_text(encoding="utf-8")
             self.assertIn("output_throughput", summary_csv.splitlines()[0])
             self.assertIn("p99_e2el_ms", summary_csv.splitlines()[0])

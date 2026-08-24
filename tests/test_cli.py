@@ -7,7 +7,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autokv.cli import _completion_manifest_is_valid, _write_completion_manifest
+from autokv.cli import (
+    RuntimeContext,
+    _canonical_source_identity,
+    _completion_manifest_is_valid,
+    _ensure_run_manifest,
+    _write_completion_manifest,
+)
+from autokv.config import Profile
+from autokv.selection import Variant, group_probe_variants
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +32,65 @@ def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 class CliTests(unittest.TestCase):
+    def test_runtime_source_identity_ignores_git_only_provenance_changes(self):
+        runtime_files = [{"path": "autokv/cli.py", "sha256": "b" * 64}]
+        first = {
+            "tree_sha256": "a" * 64,
+            "files": runtime_files,
+            "git_commit": "c" * 40,
+            "git_dirty": False,
+        }
+        second = {
+            **first,
+            "git_commit": "d" * 40,
+            "git_dirty": True,
+        }
+        self.assertEqual(
+            _canonical_source_identity(first),
+            _canonical_source_identity(second),
+        )
+
+    def test_run_manifest_keeps_run_start_git_provenance_for_same_runtime_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = Profile.from_dict(Profile.default_dict("quick"))
+            profile_path = root / "configs" / "quick.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text("{}\n", encoding="utf-8")
+            source = {
+                "tree_sha256": "a" * 64,
+                "files": [{"path": "autokv/cli.py", "sha256": "b" * 64}],
+                "git_commit": "c" * 40,
+                "git_dirty": False,
+            }
+            common = {
+                "root": root,
+                "profile": profile,
+                "profile_path": profile_path,
+                "profile_hash": "d" * 64,
+                "manifest": {},
+                "dataset_hash": "e" * 64,
+                "lock": {
+                    "image_ref": "image@sha256:" + "f" * 64,
+                    "image_digest": "sha256:" + "f" * 64,
+                    "model_revision": "1" * 40,
+                },
+                "run_id": "same-runtime",
+            }
+            first = RuntimeContext(source=source, **common)
+            path = _ensure_run_manifest(first)
+            second = RuntimeContext(
+                source={
+                    **source,
+                    "git_commit": "2" * 40,
+                    "git_dirty": True,
+                },
+                **common,
+            )
+            self.assertEqual(_ensure_run_manifest(second), path)
+            observed = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(observed["source"]["git_commit"], "c" * 40)
+
     def test_completion_manifest_hashes_every_active_run_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -289,6 +356,86 @@ class CliTests(unittest.TestCase):
             run_id = json.loads(status.stdout)["run_id"]
             smoke_dir = root / "runs" / run_id / "smoke"
             smoke_dir.mkdir(parents=True)
+
+            def add_completion_evidence(
+                path: Path, rows: int, variant: Variant
+            ):
+                server_log = path.with_suffix(".server.log")
+                command_record = path.with_suffix(".command.json")
+                state = path.with_suffix(".state.json")
+                argv = [
+                    "--attention-backend",
+                    "FLASHINFER",
+                    "--kv-cache-dtype",
+                    variant.kv_dtype,
+                ]
+                log_lines = [
+                    "Using FLASHINFER backend",
+                    "GPU KV cache size: 233,104 tokens",
+                ]
+                if variant.kv_dtype == "fp8_e4m3":
+                    argv.append("--calculate-kv-scales")
+                    log_lines.append(
+                        "Using fp8_e4m3 data type to store kv cache."
+                    )
+                else:
+                    log_lines.append("Engine config: kv_cache_dtype=bfloat16")
+                if variant.skip_layers:
+                    argv.append("--kv-cache-dtype-skip-layers")
+                    argv.extend(str(layer) for layer in variant.skip_layers)
+                    skipped = set(variant.skip_layers)
+                    log_lines.extend(
+                        "Layer model.layers."
+                        f"{layer}.self_attn: kv_cache_dtype="
+                        f"{'auto' if layer in skipped else 'fp8_e4m3'}, "
+                        "sliding_window=None"
+                        for layer in range(32)
+                    )
+                server_log.write_text(
+                    "\n".join(log_lines) + "\n", encoding="utf-8"
+                )
+                command_record.write_text(
+                    json.dumps(
+                        {
+                            "variant": {
+                                "name": variant.name,
+                                "kv_dtype": variant.kv_dtype,
+                                "skip_layers": list(variant.skip_layers),
+                            },
+                            "inspected_argv": argv,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                state.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 2,
+                            "complete": True,
+                            "artifact": path.name,
+                            "artifact_sha256": hashlib.sha256(
+                                path.read_bytes()
+                            ).hexdigest(),
+                            "rows": rows,
+                            "evidence": {
+                                "server_log": {
+                                    "path": server_log.name,
+                                    "sha256": hashlib.sha256(
+                                        server_log.read_bytes()
+                                    ).hexdigest(),
+                                },
+                                "command_record": {
+                                    "path": command_record.name,
+                                    "sha256": hashlib.sha256(
+                                        command_record.read_bytes()
+                                    ).hexdigest(),
+                                },
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
             smoke_records = []
             for name in ("first", "second"):
                 path = smoke_dir / f"{name}.jsonl"
@@ -296,6 +443,7 @@ class CliTests(unittest.TestCase):
                     json.dumps({"quality_mode": "edit_distance"}) + "\n",
                     encoding="utf-8",
                 )
+                add_completion_evidence(path, 1, Variant.fp8())
                 smoke_records.append(
                     {
                         "path": path.relative_to(root).as_posix(),
@@ -319,33 +467,40 @@ class CliTests(unittest.TestCase):
             probe_dir.mkdir(parents=True)
             artifacts = {}
 
-            def add_artifact(name: str, quality: float):
-                path = probe_dir / f"{name}.jsonl"
+            def add_artifact(variant: Variant, quality: float):
+                path = probe_dir / f"{variant.name}.jsonl"
                 path.write_text(
-                    json.dumps(
-                        {
-                            "sample_id": "one",
-                            "quality_mode": "edit_distance",
-                            "quality_score": quality,
-                        }
-                    )
-                    + "\n",
+                    "".join(
+                        json.dumps(
+                            {
+                                "sample_id": f"sample-{index}",
+                                "quality_mode": "edit_distance",
+                                "quality_score": quality,
+                            }
+                        )
+                        + "\n"
+                        for index in range(6)
+                    ),
                     encoding="utf-8",
                 )
-                artifacts[name] = {
+                add_completion_evidence(path, 6, variant)
+                artifacts[variant.name] = {
                     "path": path.relative_to(root).as_posix(),
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 }
 
-            add_artifact("fp8", 0.2)
+            add_artifact(Variant.fp8(), 0.2)
             group_scores = {}
-            for group in range(8):
-                quality = 0.21 + group / 100
-                add_artifact(f"group-{group:02d}", quality)
-                group_scores[f"group-{group:02d}"] = quality - 0.2
+            for group, variant in enumerate(group_probe_variants(32, 4)):
+                quality = 0.28 - group / 100
+                add_artifact(variant, quality)
+                group_scores[variant.name] = quality - 0.2
             for layer in range(8):
-                add_artifact(f"layer-{layer:02d}", 0.2 + layer / 100)
-            add_artifact("auto-4", 0.5)
+                add_artifact(
+                    Variant.mixed(f"layer-{layer:02d}", (layer,)),
+                    0.2 + layer / 100,
+                )
+            add_artifact(Variant.mixed("auto-4", (4, 5, 6, 7)), 0.5)
             (probe_dir / "index.json").write_text(
                 json.dumps(
                     {
@@ -354,6 +509,7 @@ class CliTests(unittest.TestCase):
                         "dataset_hash": made_payload["dataset_hash"],
                         "quality_mode": "edit_distance",
                         "group_scores": group_scores,
+                        "selected_groups": [list(range(4)), list(range(4, 8))],
                         "candidate_layers": list(range(8)),
                         "auto_layers": [4, 5, 6, 7],
                         "artifacts": artifacts,
@@ -409,6 +565,25 @@ class CliTests(unittest.TestCase):
             self.assertTrue(valid_steps["smoke"])
             self.assertTrue(valid_steps["probe"])
             self.assertTrue(valid_steps["select"])
+
+            selection_path = root / "runs" / run_id / "selection.json"
+            original_selection = selection_path.read_text(encoding="utf-8")
+            tampered_selection = json.loads(original_selection)
+            tampered_selection["auto_layers"] = [0, 1, 2, 3]
+            selection_path.write_text(
+                json.dumps(tampered_selection), encoding="utf-8"
+            )
+            tampered_status = run_cli(
+                "status",
+                "--project-root",
+                str(root),
+                "--profile",
+                "quick",
+                "--json",
+            )
+            self.assertEqual(tampered_status.returncode, 0, tampered_status.stderr)
+            self.assertFalse(json.loads(tampered_status.stdout)["steps"]["select"])
+            selection_path.write_text(original_selection, encoding="utf-8")
 
             (probe_dir / "layer-00.jsonl").write_text(
                 "corrupted\n", encoding="utf-8"

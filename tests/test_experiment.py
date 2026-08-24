@@ -41,11 +41,45 @@ class ExperimentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = root / "rows.jsonl"
+            server_log = root / "rows.server.log"
+            command_record = root / "rows.command.json"
             artifact.write_text('{"ok":true}\n', encoding="utf-8")
-            mark_complete(root / "state.json", artifact, expected_rows=1)
-            self.assertTrue(is_complete(root / "state.json", artifact, expected_rows=1))
+            server_log.write_text("server\n", encoding="utf-8")
+            command_record.write_text("{}\n", encoding="utf-8")
+            evidence = {
+                "server_log": server_log,
+                "command_record": command_record,
+            }
+            mark_complete(
+                root / "state.json", artifact, expected_rows=1, evidence=evidence
+            )
+            self.assertTrue(
+                is_complete(
+                    root / "state.json",
+                    artifact,
+                    expected_rows=1,
+                    evidence=evidence,
+                )
+            )
+            server_log.unlink()
+            self.assertFalse(
+                is_complete(
+                    root / "state.json",
+                    artifact,
+                    expected_rows=1,
+                    evidence=evidence,
+                )
+            )
+            server_log.write_text("server\n", encoding="utf-8")
             artifact.write_text('{"ok":false}\n', encoding="utf-8")
-            self.assertFalse(is_complete(root / "state.json", artifact, expected_rows=1))
+            self.assertFalse(
+                is_complete(
+                    root / "state.json",
+                    artifact,
+                    expected_rows=1,
+                    evidence=evidence,
+                )
+            )
 
     def test_run_id_is_deterministic_and_sensitive_to_image(self):
         first = canonical_run_id("profile", "sha256:a", "model", "data", "source-a")
@@ -73,11 +107,23 @@ class ExperimentTests(unittest.TestCase):
             validate_server_log(log.replace("FLASHINFER", "FLASH_ATTN"), Variant.fp8())
         bf16_log = (
             "Using AttentionBackendEnum.FLASHINFER backend.\n"
+            "Engine config: kv_cache_dtype=bfloat16\n"
             "GPU KV cache size: 131,072 tokens\n"
         )
         validate_server_log(bf16_log, Variant.bf16())
         with self.assertRaisesRegex(ValueError, "unexpectedly confirms FP8"):
             validate_server_log(log, Variant.bf16())
+        fallback_log = bf16_log.replace(
+            "Using AttentionBackendEnum.FLASHINFER backend.",
+            "FLASHINFER unavailable; falling back to FLASH_ATTN backend.",
+        )
+        with self.assertRaisesRegex(ValueError, "active FLASHINFER"):
+            validate_server_log(fallback_log, Variant.bf16())
+        with self.assertRaisesRegex(ValueError, "BF16"):
+            validate_server_log(
+                bf16_log.replace("kv_cache_dtype=bfloat16", "dtype=bfloat16"),
+                Variant.bf16(),
+            )
 
     def test_mixed_server_log_proves_every_effective_layer_dtype(self):
         skipped = (2, 7, 18, 29)
@@ -173,13 +219,27 @@ class ExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "already running"):
             safe_remove_stale_container("autokv-test", runner)
 
-    def test_safe_cleanup_owned_container_stops_and_removes_exact_container(self):
+    def test_safe_cleanup_refuses_to_treat_inspect_failure_as_absence(self):
+        def runner(argv, timeout=None):
+            return _result(argv, returncode=1, stderr="permission denied")
+
+        with self.assertRaisesRegex(RuntimeError, "cannot inspect"):
+            safe_cleanup_owned_container("autokv-unknown", runner)
+
+    def test_safe_cleanup_accepts_docker_rm_auto_removal_after_stop(self):
         calls = []
+        exists = True
 
         def runner(argv, timeout=None):
+            nonlocal exists
             calls.append(tuple(argv))
             if tuple(argv[:2]) == ("docker", "inspect"):
+                if not exists:
+                    return _result(argv, returncode=1, stderr="No such object")
                 return _result(argv, stdout="autokv-skip|true\n")
+            if tuple(argv[:2]) == ("docker", "stop"):
+                exists = False
+                return _result(argv)
             return _result(argv)
 
         safe_cleanup_owned_container("autokv-bench-deadbeef0000", runner)
@@ -188,7 +248,7 @@ class ExperimentTests(unittest.TestCase):
             ("docker", "stop", "--time", "30", "autokv-bench-deadbeef0000"),
             calls,
         )
-        self.assertIn(("docker", "rm", "autokv-bench-deadbeef0000"), calls)
+        self.assertNotIn(("docker", "rm", "autokv-bench-deadbeef0000"), calls)
 
     def test_fake_variant_run_writes_scored_resumable_result(self):
         profile = Profile.from_dict(Profile.default_dict("quick"))

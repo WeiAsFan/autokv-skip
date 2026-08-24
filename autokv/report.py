@@ -358,6 +358,7 @@ def render_report(
             f"- Git commit：`{source.get('git_commit', 'not-available')}`；dirty：{source.get('git_dirty', 'not-available')}",
             "- 注意力后端：FLASHINFER；KV 预算：16G；随机 token scales：启用。",
             f"- 全实验质量评分模式：{selection.get('quality_mode', 'missing')}。",
+            f"- 选层搜索范围：{selection.get('selection_scope', 'missing')}。",
             "",
             "## KV 显存公式",
             "",
@@ -423,18 +424,19 @@ def render_report(
             "",
             "### 理论容量与运行时证据",
             "",
-            "16 GiB 预算按 KV 元素字节数计算理论 token 数；偏差超过 10% 时，必须保留 page/block 日志证据，否则证据门禁不通过。",
+            "16 GiB 预算按 KV 元素字节数计算理论 token 数；偏差超过 10% 时，只有可重算 tokens 的可用 KV 内存，或足以覆盖偏差的 padding 浪费上界，才算定量解释。普通 block/page 文本不能让门禁通过。",
             "",
-            "| 配置 | 理论 tokens | 实测 tokens | 相对偏差 | ≤10% | page/block 证据 |",
+            "| 配置 | 理论 tokens | 实测 tokens | 相对偏差 | ≤10% | 定量解释 |",
             "|---|---:|---:|---:|---|---|",
         )
     )
     capacity_evidence_complete = True
+    capacity_evidence_details: list[str] = []
     for name in ("bf16", "fp8", "auto-4"):
         raw_validation = performance.get(name, {}).get("capacity_validation", {})
         validation = raw_validation if isinstance(raw_validation, Mapping) else {}
-        evidence = validation.get("page_or_block_evidence", [])
-        evidence_count = len(evidence) if isinstance(evidence, list) else 0
+        explanations = validation.get("quantitative_explanations", [])
+        explanation_count = len(explanations) if isinstance(explanations, list) else 0
         evidence_complete = validation.get("evidence_complete") is True
         capacity_evidence_complete = capacity_evidence_complete and evidence_complete
         deviation = validation.get("relative_deviation")
@@ -447,8 +449,51 @@ def render_report(
             f"| {name} | {validation.get('theoretical_tokens', 'N/A')} | "
             f"{validation.get('measured_tokens', 'N/A')} | {deviation_text} | "
             f"{'是' if validation.get('within_10_percent') is True else '否'} | "
-            f"{evidence_count} 行（{'充分' if evidence_complete else '不足'}） |"
+            f"{explanation_count} 条（{'充分' if evidence_complete else '不足'}） |"
         )
+        server_record = performance.get(name, {}).get("server_log", {})
+        server = server_record if isinstance(server_record, Mapping) else {}
+        path_text = str(server.get("path", "missing")).replace("`", "'")
+        hash_text = str(server.get("sha256", "missing"))
+        capacity_evidence_details.append(
+            f"- {name}：server log `{path_text}`；SHA-256 `{hash_text}`。"
+        )
+        alignment = validation.get("alignment_evidence", [])
+        excerpts = []
+        if isinstance(alignment, list):
+            excerpts = [
+                str(record.get("line", ""))
+                for record in alignment
+                if isinstance(record, Mapping) and record.get("line")
+            ]
+        if not excerpts:
+            runtime = validation.get("runtime_evidence", [])
+            if isinstance(runtime, list):
+                excerpts = [str(line) for line in runtime if str(line)]
+        for excerpt in excerpts[:3]:
+            safe_excerpt = excerpt.replace("`", "'")[:240]
+            capacity_evidence_details.append(f"  - 摘录：`{safe_excerpt}`")
+    lines.extend(("", "#### 容量证据定位", "", *capacity_evidence_details))
+    lines.extend(("", "### 遥测与矩阵状态", ""))
+    lines.extend(
+        (
+            "| 配置 | dmon 路径 | dmon SHA-256 | matrix state 路径 | matrix SHA-256 |",
+            "|---|---|---|---|---|",
+        )
+    )
+    for name in ("bf16", "fp8", "auto-4"):
+        telemetry_raw = performance.get(name, {}).get("telemetry", {})
+        matrix_raw = performance.get(name, {}).get("matrix_state", {})
+        telemetry = telemetry_raw if isinstance(telemetry_raw, Mapping) else {}
+        matrix_state = matrix_raw if isinstance(matrix_raw, Mapping) else {}
+        values = [
+            str(telemetry.get("path", "missing")),
+            str(telemetry.get("sha256", "missing")),
+            str(matrix_state.get("path", "missing")),
+            str(matrix_state.get("sha256", "missing")),
+        ]
+        escaped = [value.replace("|", "\\|") for value in values]
+        lines.append(f"| {name} | {' | '.join(escaped)} |")
     lines.extend(
         (
             "",
@@ -494,7 +539,7 @@ def render_report(
             auto_q > random_median,
         ),
         ("Auto-4 Q 高于 Inverted-4", auto_q > inverted_q),
-        ("容量偏差或 page/block 证据完整", capacity_evidence_complete),
+        ("容量偏差或定量运行时解释完整", capacity_evidence_complete),
     ]
     lines.extend(("", "## 预注册验收", "", "| 条件 | 结果 |", "|---|---|"))
     for label, passed in checks:

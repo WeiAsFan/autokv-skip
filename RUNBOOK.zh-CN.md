@@ -115,7 +115,7 @@ git rev-parse HEAD 2>/dev/null || true
 
 1. 缺少任一文件：不要只复制单个 Python 文件；重新复制整个 `autokv-skip` 目录。
 2. 文件权限不可读：执行 `ls -la` 查明所有者；只修正本项目目录权限，不对系统目录做递归权限修改。
-3. Git 显示本地改动：先把 `git diff` 保存。run ID 会绑定实际运行源码树 SHA-256，`run-manifest.json` 还会记录 Git commit/dirty 状态；不要在一个 run 中途改 Python 或配置文件。
+3. Git 显示本地改动：先把 `git diff` 保存。run ID 会绑定实际运行源码树 SHA-256，`run-manifest.json` 还会保存“该 run 首次建立时”的 Git commit/dirty 状态；不要在一个 run 中途改 Python、脚本或配置文件。只改文档或提交同一份运行源码不会改变 run ID，既有 manifest 仍保留原始 Git provenance，不会被当前提交号覆盖。
 
 ---
 
@@ -621,7 +621,7 @@ grep -RHiE 'FLASHINFER|FP8|GPU KV cache size|Maximum concurrency' runs/*/smoke-*
 
 ### 成功判据
 
-退出码 0；`smoke.json` 中 `complete=true`、`deterministic=true`，四个 comparison 字段都为 true，`quality_mode` 只能是 `nll` 或 `edit_distance`，两次 capacity 完全相等；两次日志都确认 FlashInfer、FP8 KV 和容量。此时 `runs/<run-id>/run-manifest.json` 必须存在，并含 profile、dataset、image、model revision、源码树 SHA-256 和 Git 身份。
+退出码 0；`smoke.json` 中 `complete=true`、`deterministic=true`，四个 comparison 字段都为 true，`quality_mode` 只能是 `nll` 或 `edit_distance`，两次 capacity 完全相等；两次日志都确认实际启用 FlashInfer、FP8 KV 和容量，两份 Docker command 记录都与请求配置一致。此时 `runs/<run-id>/run-manifest.json` 必须存在，并含 profile、dataset、image、model revision、源码树 SHA-256 和 run-start Git 身份。
 
 ### 失败分支
 
@@ -681,7 +681,7 @@ quick 总 GPU 时间约 5–12 小时。首次 kernel compilation、磁盘速度
 
 ### 成功判据
 
-tmux session 存在；最终 `quick_run_exit=0`；`run` JSON 的 `complete=true`、`completed_steps` 含全部 9 阶段并给出 report/csv/performance_csv/svg 路径。每个 server 的 command JSON 都有 `inspected_server_argv`；Auto-4 server log 的 32 个逐层条目必须证明恰好所选 4 层为 `auto`、其余为 `fp8_e4m3`。每个性能配置还必须有非空的 `*.dmon.log`，其命令为只读的 `nvidia-smi dmon -s pucm -d 1 -o DT`。
+tmux session 存在；最终 `quick_run_exit=0`；`run` JSON 的 `complete=true`、`completed_steps` 含全部 9 阶段并给出 report/csv/performance_csv/svg 路径。每个 server 的 command JSON 都有 `inspected_server_argv`；Auto-4 server log 的 32 个逐层条目必须证明恰好所选 4 层为 `auto`、其余为 `fp8_e4m3`。每个性能配置还必须有非空的 `*.dmon.log` 和对应 `*.matrix.state.json`：后者哈希锚定整个预注册场景矩阵的原始 JSON、指标和 dmon 日志。遥测命令为只读的 `nvidia-smi dmon -s pucm -d 1 -o DT`。
 
 ### 失败分支
 
@@ -758,7 +758,7 @@ status 的已完成步骤逐步变为 true；不存在两个带项目 label 的�
 
 ### 仅在精确产物损坏时使用 `--force CONFIG_ID`
 
-`status` 现在会递归核对索引、原始 JSONL、server/command/dmon 日志和 SHA-256，不能用一个写着 `complete=true` 的损坏文件骗过。先运行 diagnose，再列出已有的 12 位配置 ID：
+`status` 会递归核对索引、原始 JSONL、selection 的重新推导结果、实际 Docker command、server/dmon 日志、benchmark matrix state 和 SHA-256，不能用一个写着 `complete=true` 的损坏文件骗过。先运行 diagnose，再列出已有的 12 位配置 ID：
 
 ```bash
 python3 - <<'PY'
@@ -815,6 +815,7 @@ test -s "$REPORT_DIR/capacity.svg"
 test -s "runs/$RUN_ID/run-manifest.json"
 test -s "runs/$RUN_ID/completed-manifest.json"
 test "$(find "runs/$RUN_ID/perf" -maxdepth 1 -name '*.dmon.log' -type f -size +0c | wc -l)" -eq 3
+test "$(find "runs/$RUN_ID/perf" -maxdepth 1 -name '*.matrix.state.json' -type f -size +0c | wc -l)" -eq 3
 sha256sum \
   runs/_environment/doctor.json \
   runs/_environment/lock.json \
@@ -863,13 +864,13 @@ tar -tzf "exports/autokv-skip-$RUN_ID-interview.tar.gz" | sed -n '1,120p'
 - 若未通过，报告明确写“未通过”或“未观察到足够缺口”，没有把噪声称为提升；
 - `performance-by-scenario.csv` 按相同 input/output length 比较 BF16、FP8、Auto-4，不拿异构长度的总均值冒充延迟对比；
 - 三份非空 `nvidia-smi dmon` 日志被索引，性能结论区分 TTFT、TPOT/ITL、吞吐、显存/利用率与容量，不声称 A6000 有原生 FP8 Tensor Core；
-- 报告展示分组和逐层敏感性表，并标记最终 4 层；理论/实测 KV tokens 偏差超过 10% 时必须列出 page/block 证据，否则验收项显示未通过；
+- 报告展示分组和逐层敏感性表，并标记最终 4 层与 quick/full 搜索范围；理论/实测 KV tokens 偏差超过 10% 时，必须由日志中的可用 KV 内存重算结果或 padding 浪费上界定量覆盖偏差，否则验收项显示未通过；普通 page/block 字样不能通过门禁；
 - 导出包列表不含 `.cache`、safetensors、token 或模型权重。
 
 ### 失败分支
 
 1. 报告命令退出 5：quality/perf 尚未完成，回阶段 11 恢复同一 run。
-2. capacity 与理论偏差超过 10%：查看报告“理论容量与运行时证据”；只有 server log 中实际 page/block 信息才能解释对齐与 runtime reserve。若证据不足，报告会把证据门禁标为未通过；不要改预算重跑出“好看”数值。
+2. capacity 与理论偏差超过 10%：查看报告“理论容量与运行时证据”和列出的 server log 路径/SHA/摘录。只有明确的 `Available KV cache memory` 能按 bytes/token 重算并贴近实测，或 `padding layers ... waste at most X%` 的上界足以覆盖缺口，才算定量解释；泛化的 block/page 日志不算。证据不足时报告会把门禁标为未通过；不要改预算重跑出“好看”数值。
 3. Auto-4 不胜随机：保留负结果，面试按 interview guide 的负结果版本讲；可选择 full 检查 coarse-to-fine 漏层假设。
 4. CSV/SVG 缺失或为空：报告不完整，不导出；重新运行 report 并检查错误。
 

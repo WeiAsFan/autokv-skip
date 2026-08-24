@@ -36,7 +36,13 @@ from autokv.doctor import (
     parse_gpu_csv,
     validate_host,
 )
-from autokv.experiment import ExperimentRunner, canonical_run_id
+from autokv.experiment import (
+    ExperimentRunner,
+    canonical_run_id,
+    is_complete,
+    validate_container_command,
+    validate_server_log,
+)
 from autokv.io import (
     atomic_write_json,
     atomic_write_text,
@@ -369,7 +375,9 @@ def _ensure_run_manifest(context: RuntimeContext) -> Path:
         immutable_keys = tuple(key for key in expected if key != "source")
         if any(observed.get(key) != expected[key] for key in immutable_keys):
             raise ValueError("run manifest differs from current immutable inputs")
-        if observed.get("source") != context.source:
+        if _canonical_source_identity(observed.get("source")) != (
+            _canonical_source_identity(context.source)
+        ):
             raise ValueError("run manifest source identity differs from current code")
         return path
     atomic_write_json(
@@ -380,6 +388,35 @@ def _ensure_run_manifest(context: RuntimeContext) -> Path:
         },
     )
     return path
+
+
+def _canonical_source_identity(source: Any) -> dict[str, Any]:
+    """Return only source fields that participate in the immutable run ID.
+
+    Git metadata is intentionally run-start provenance: a documentation-only
+    commit does not change the runtime tree hash and must not invalidate an
+    already-created run manifest.
+    """
+    if not isinstance(source, Mapping):
+        raise ValueError("source identity is not an object")
+    tree_sha256 = source.get("tree_sha256")
+    files = source.get("files")
+    if not isinstance(tree_sha256, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", tree_sha256
+    ):
+        raise ValueError("source identity has an invalid tree hash")
+    if not isinstance(files, list) or any(
+        not isinstance(record, Mapping)
+        or not isinstance(record.get("path"), str)
+        or not isinstance(record.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256"))) is None
+        for record in files
+    ):
+        raise ValueError("source identity has an invalid runtime file list")
+    return {
+        "tree_sha256": tree_sha256,
+        "files": [dict(record) for record in files],
+    }
 
 
 def _write_completion_manifest(
@@ -633,7 +670,13 @@ def _smoke_is_complete(context: RuntimeContext) -> bool:
             artifact = payload.get(key)
             if not isinstance(artifact, Mapping):
                 return False
-            _verified_path(context.root, artifact.get("path"), artifact.get("sha256"))
+            if not _experiment_record_is_complete(
+                context.root,
+                artifact,
+                expected_rows=1,
+                expected_variant=Variant.fp8(),
+            ):
+                return False
         return (
             payload.get("deterministic") is True
             and payload.get("run_id") == context.run_id
@@ -838,20 +881,37 @@ def run_probe(
     return {**payload, "index": str(index_path)}
 
 
-def run_select(context: RuntimeContext) -> dict[str, Any]:
-    index_path = context.root / "runs" / context.run_id / "probe" / "index.json"
+def _derive_selection(
+    root: Path,
+    run_id: str,
+    dataset_hash: str,
+    profile: Profile,
+    quality_mode: str,
+    index_path: Path,
+) -> dict[str, Any]:
+    """Reproduce every selected/control layer from hashed probe artifacts."""
     if not index_path.is_file():
         raise IncompleteDataError(
-            f"probe index is missing; run: python3 -m autokv probe --profile {context.profile.name}"
+            f"probe index is missing; run: python3 -m autokv probe --profile {profile.name}"
         )
     index = read_json(index_path)
     if not isinstance(index, Mapping) or index.get("complete") is not True:
         raise IncompleteDataError("probe index is incomplete")
-    quality_mode = _locked_quality_mode(context)
-    if index.get("dataset_hash") != context.dataset_hash:
+    if index.get("run_id") != run_id:
+        raise ValueError("probe index run ID differs from this run")
+    if index.get("dataset_hash") != dataset_hash:
         raise ValueError("probe index dataset hash differs from this run")
     if index.get("quality_mode") != quality_mode:
         raise ValueError("probe index quality mode differs from the smoke lock")
+    if not _probe_status_is_complete(
+        root,
+        run_id,
+        dataset_hash,
+        profile,
+    ):
+        raise IncompleteDataError(
+            "probe artifact state/server/command evidence is incomplete"
+        )
     artifact_index = index.get("artifacts")
     if not isinstance(artifact_index, Mapping):
         raise ValueError("probe index has no artifact map")
@@ -859,24 +919,24 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
     if not isinstance(baseline_record, Mapping):
         raise ValueError("probe index has no FP8 baseline")
     baseline_path = _verified_path(
-        context.root, baseline_record.get("path"), baseline_record.get("sha256")
+        root, baseline_record.get("path"), baseline_record.get("sha256")
     )
     baseline = _mean_quality(baseline_path, quality_mode)
     group_scores: dict[str, float] = {}
-    if context.profile.selection.mode == "coarse_to_fine":
+    selected_groups: tuple[tuple[int, ...], ...] = ()
+    if profile.selection.mode == "coarse_to_fine":
         indexed_group_scores = index.get("group_scores")
         if not isinstance(indexed_group_scores, Mapping):
             raise ValueError("probe index has no group score map")
+        scores_by_group: dict[tuple[int, ...], float] = {}
         for variant in group_probe_variants(
-            context.profile.model.num_layers,
-            context.profile.selection.group_size,
+            profile.model.num_layers,
+            profile.selection.group_size,
         ):
             record = artifact_index.get(variant.name)
             if not isinstance(record, Mapping):
                 raise ValueError(f"probe artifact missing for group {variant.name}")
-            path = _verified_path(
-                context.root, record.get("path"), record.get("sha256")
-            )
+            path = _verified_path(root, record.get("path"), record.get("sha256"))
             score = _mean_quality(path, quality_mode) - baseline
             indexed_score = indexed_group_scores.get(variant.name)
             if not isinstance(indexed_score, (int, float)) or not math.isclose(
@@ -886,45 +946,58 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
                     f"probe group score does not reproduce: {variant.name}"
                 )
             group_scores[variant.name] = score
+            scores_by_group[variant.skip_layers] = score
+        selected_groups = select_top_groups(
+            scores_by_group, profile.selection.top_groups
+        )
+        expected_candidates = tuple(
+            sorted(layer for group in selected_groups for layer in group)
+        )
+    else:
+        expected_candidates = tuple(range(profile.model.num_layers))
     candidate_layers_raw = index.get("candidate_layers")
     if not isinstance(candidate_layers_raw, list):
         raise ValueError("probe index has no candidate layer list")
     candidate_layers = tuple(int(layer) for layer in candidate_layers_raw)
+    if candidate_layers != expected_candidates:
+        raise ValueError("probe candidate layers do not reproduce from group artifacts")
+    if index.get("selected_groups", []) != [list(group) for group in selected_groups]:
+        raise ValueError("probe selected groups do not reproduce from artifacts")
     layer_scores: dict[int, float] = {}
     for layer in candidate_layers:
         record = artifact_index.get(f"layer-{layer:02d}")
         if not isinstance(record, Mapping):
             raise ValueError(f"probe artifact missing for layer {layer}")
-        path = _verified_path(context.root, record.get("path"), record.get("sha256"))
+        path = _verified_path(root, record.get("path"), record.get("sha256"))
         layer_scores[layer] = _mean_quality(path, quality_mode) - baseline
-    auto_layers = select_top_layers(layer_scores, context.profile.selection.k)
+    auto_layers = select_top_layers(layer_scores, profile.selection.k)
     if list(auto_layers) != index.get("auto_layers"):
         raise ValueError("probe auto layer decision does not reproduce from artifacts")
-    inverted_layers = select_bottom_layers(layer_scores, context.profile.selection.k)
-    first_layers = tuple(range(context.profile.selection.k))
+    inverted_layers = select_bottom_layers(layer_scores, profile.selection.k)
+    first_layers = tuple(range(profile.selection.k))
     last_layers = tuple(
         range(
-            context.profile.model.num_layers - context.profile.selection.k,
-            context.profile.model.num_layers,
+            profile.model.num_layers - profile.selection.k,
+            profile.model.num_layers,
         )
     )
     forbidden = {auto_layers, inverted_layers, first_layers, last_layers}
     random_layers = random_controls(
-        context.profile.model.num_layers,
-        context.profile.selection.k,
-        context.profile.selection.random_seeds,
+        profile.model.num_layers,
+        profile.selection.k,
+        profile.selection.random_seeds,
         forbidden,
     )
-    payload = {
+    return {
         "schema_version": 1,
         "complete": True,
-        "run_id": context.run_id,
-        "profile": context.profile.name,
-        "dataset_hash": context.dataset_hash,
+        "run_id": run_id,
+        "profile": profile.name,
+        "dataset_hash": dataset_hash,
         "quality_mode": quality_mode,
         "selection_scope": (
             "two-best-groups/eight-layers"
-            if context.profile.selection.mode == "coarse_to_fine"
+            if profile.selection.mode == "coarse_to_fine"
             else "all-32-layers"
         ),
         "candidate_layers": list(candidate_layers),
@@ -933,11 +1006,27 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
         "first_layers": list(first_layers),
         "last_layers": list(last_layers),
         "random_layers": [list(layers) for layers in random_layers],
-        "random_seeds": list(context.profile.selection.random_seeds),
+        "random_seeds": list(profile.selection.random_seeds),
         "group_scores": group_scores,
         "layer_scores": {str(layer): score for layer, score in sorted(layer_scores.items())},
-        "probe_index": _artifact_record(context.root, index_path),
+        "probe_index": _artifact_record(root, index_path),
     }
+
+
+def run_select(context: RuntimeContext) -> dict[str, Any]:
+    index_path = context.root / "runs" / context.run_id / "probe" / "index.json"
+    if not index_path.is_file():
+        raise IncompleteDataError(
+            f"probe index is missing; run: python3 -m autokv probe --profile {context.profile.name}"
+        )
+    payload = _derive_selection(
+        context.root,
+        context.run_id,
+        context.dataset_hash,
+        context.profile,
+        _locked_quality_mode(context),
+        index_path,
+    )
     selection_path = context.root / "runs" / context.run_id / "selection.json"
     atomic_write_json(selection_path, payload)
     return {**payload, "selection": str(selection_path)}
@@ -952,16 +1041,16 @@ def _load_selection(context: RuntimeContext) -> Mapping[str, Any]:
     selection = read_json(path)
     if not isinstance(selection, Mapping) or selection.get("complete") is not True:
         raise IncompleteDataError("selection is incomplete")
-    if selection.get("run_id") != context.run_id:
-        raise ValueError("selection run ID does not match current immutable inputs")
-    if selection.get("quality_mode") != _locked_quality_mode(context):
-        raise ValueError("selection quality mode differs from the smoke lock")
-    probe_record = selection.get("probe_index")
-    if not isinstance(probe_record, Mapping):
-        raise ValueError("selection has no verified probe index record")
-    _verified_path(
-        context.root, probe_record.get("path"), probe_record.get("sha256")
+    expected = _derive_selection(
+        context.root,
+        context.run_id,
+        context.dataset_hash,
+        context.profile,
+        _locked_quality_mode(context),
+        context.root / "runs" / context.run_id / "probe" / "index.json",
     )
+    if dict(selection) != expected:
+        raise ValueError("selection does not reproduce exactly from probe artifacts")
     return selection
 
 
@@ -1111,12 +1200,16 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
         scenario_groups = summary.get("scenario_groups")
         validation = summary.get("capacity_validation")
         telemetry = summary.get("telemetry")
+        server_log = summary.get("server_log")
+        matrix_state = summary.get("matrix_state")
         if (
             not isinstance(capacity, Mapping)
             or not isinstance(aggregate, Mapping)
             or not isinstance(scenario_groups, list)
             or not isinstance(validation, Mapping)
             or not isinstance(telemetry, Mapping)
+            or not isinstance(server_log, Mapping)
+            or not isinstance(matrix_state, Mapping)
         ):
             raise ValueError(f"benchmark summary is malformed: {path}")
         capacities[name] = Capacity(
@@ -1135,9 +1228,18 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
             "scenario_groups": scenario_groups,
             "capacity_validation": validation,
             "telemetry": telemetry,
+            "server_log": server_log,
+            "matrix_state": matrix_state,
         }
     output_dir = context.root / "runs" / context.run_id / "report"
-    report_selection = {**dict(selection), "source": context.source}
+    run_manifest = read_json(
+        context.root / "runs" / context.run_id / "run-manifest.json"
+    )
+    if not isinstance(run_manifest, Mapping) or not isinstance(
+        run_manifest.get("source"), Mapping
+    ):
+        raise ValueError("run manifest has no source provenance")
+    report_selection = {**dict(selection), "source": run_manifest["source"]}
     artifacts = render_report(
         output_dir,
         context.profile,
@@ -1184,6 +1286,50 @@ def _record_is_valid(root: Path, record: Any) -> bool:
         return False
 
 
+def _experiment_record_is_complete(
+    root: Path,
+    record: Any,
+    *,
+    expected_rows: int,
+    expected_variant: Variant,
+) -> bool:
+    if not isinstance(record, Mapping):
+        return False
+    try:
+        artifact = _verified_path(root, record.get("path"), record.get("sha256"))
+        evidence = {
+            "server_log": artifact.with_suffix(".server.log"),
+            "command_record": artifact.with_suffix(".command.json"),
+        }
+        if not is_complete(
+            artifact.with_suffix(".state.json"),
+            artifact,
+            expected_rows,
+            evidence=evidence,
+        ):
+            return False
+        command = read_json(evidence["command_record"])
+        if not isinstance(command, Mapping):
+            return False
+        if command.get("variant") != {
+            "name": expected_variant.name,
+            "kv_dtype": expected_variant.kv_dtype,
+            "skip_layers": list(expected_variant.skip_layers),
+        }:
+            return False
+        inspected = command.get("inspected_argv")
+        if not isinstance(inspected, list):
+            return False
+        validate_container_command(json.dumps(inspected), expected_variant)
+        validate_server_log(
+            evidence["server_log"].read_text(encoding="utf-8"),
+            expected_variant,
+        )
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _smoke_status_is_complete(root: Path, run_id: str) -> bool:
     path = root / "runs" / run_id / "smoke" / "smoke.json"
     try:
@@ -1194,8 +1340,18 @@ def _smoke_status_is_complete(root: Path, run_id: str) -> bool:
             and payload.get("deterministic") is True
             and payload.get("run_id") == run_id
             and payload.get("quality_mode") in {"nll", "edit_distance"}
-            and _record_is_valid(root, payload.get("first"))
-            and _record_is_valid(root, payload.get("second"))
+            and _experiment_record_is_complete(
+                root,
+                payload.get("first"),
+                expected_rows=1,
+                expected_variant=Variant.fp8(),
+            )
+            and _experiment_record_is_complete(
+                root,
+                payload.get("second"),
+                expected_rows=1,
+                expected_variant=Variant.fp8(),
+            )
         )
     except (OSError, TypeError, ValueError):
         return False
@@ -1218,6 +1374,12 @@ def _probe_status_is_complete(
             or payload.get("quality_mode") not in {"nll", "edit_distance"}
         ):
             return False
+        smoke = read_json(root / "runs" / run_id / "smoke" / "smoke.json")
+        if (
+            not isinstance(smoke, Mapping)
+            or smoke.get("quality_mode") != payload.get("quality_mode")
+        ):
+            return False
         artifacts = payload.get("artifacts")
         candidates = payload.get("candidate_layers")
         auto_layers = payload.get("auto_layers")
@@ -1228,19 +1390,36 @@ def _probe_status_is_complete(
             or len(auto_layers) != profile.selection.k
         ):
             return False
-        expected = {"fp8", "auto-4", *(f"layer-{int(layer):02d}" for layer in candidates)}
-        if profile.selection.mode == "coarse_to_fine":
-            expected.update(
-                variant.name
-                for variant in group_probe_variants(
-                    profile.model.num_layers, profile.selection.group_size
+        expected_variants = {
+            "fp8": Variant.fp8(),
+            "auto-4": Variant.mixed("auto-4", tuple(int(layer) for layer in auto_layers)),
+            **{
+                f"layer-{int(layer):02d}": Variant.mixed(
+                    f"layer-{int(layer):02d}", (int(layer),)
                 )
+                for layer in candidates
+            },
+        }
+        if profile.selection.mode == "coarse_to_fine":
+            expected_variants.update(
+                {
+                    variant.name: variant
+                    for variant in group_probe_variants(
+                        profile.model.num_layers, profile.selection.group_size
+                    )
+                }
             )
-        if set(artifacts) != expected:
+        if set(artifacts) != set(expected_variants):
             return False
         mode = str(payload["quality_mode"])
-        for record in artifacts.values():
-            if not _record_is_valid(root, record):
+        expected_rows = len(make_cases(profile, "probe"))
+        for name, record in artifacts.items():
+            if not _experiment_record_is_complete(
+                root,
+                record,
+                expected_rows=expected_rows,
+                expected_variant=expected_variants[name],
+            ):
                 return False
             assert isinstance(record, Mapping)
             artifact_path = _verified_path(
@@ -1261,25 +1440,26 @@ def _selection_status_is_complete(
     path = root / "runs" / run_id / "selection.json"
     try:
         payload = read_json(path)
-        random_layers = payload.get("random_layers") if isinstance(payload, Mapping) else None
-        layer_scores = payload.get("layer_scores") if isinstance(payload, Mapping) else None
-        return (
-            isinstance(payload, Mapping)
-            and payload.get("complete") is True
-            and payload.get("run_id") == run_id
-            and payload.get("dataset_hash") == dataset_hash
-            and payload.get("quality_mode") in {"nll", "edit_distance"}
-            and isinstance(payload.get("auto_layers"), list)
-            and len(payload["auto_layers"]) == profile.selection.k
-            and isinstance(random_layers, list)
-            and len(random_layers) == len(profile.selection.random_seeds)
-            and all(
-                isinstance(layers, list) and len(layers) == profile.selection.k
-                for layers in random_layers
-            )
-            and isinstance(layer_scores, Mapping)
-            and _record_is_valid(root, payload.get("probe_index"))
+        if not isinstance(payload, Mapping) or payload.get("quality_mode") not in {
+            "nll",
+            "edit_distance",
+        }:
+            return False
+        smoke = read_json(root / "runs" / run_id / "smoke" / "smoke.json")
+        if (
+            not isinstance(smoke, Mapping)
+            or smoke.get("quality_mode") != payload.get("quality_mode")
+        ):
+            return False
+        expected = _derive_selection(
+            root,
+            run_id,
+            dataset_hash,
+            profile,
+            str(payload["quality_mode"]),
+            root / "runs" / run_id / "probe" / "index.json",
         )
+        return dict(payload) == expected
     except (KeyError, OSError, TypeError, ValueError):
         return False
 
@@ -1313,9 +1493,27 @@ def _quality_status_is_complete(
         artifacts = payload.get("artifacts")
         if not isinstance(artifacts, Mapping) or set(artifacts) != required:
             return False
+        if not _selection_status_is_complete(root, run_id, dataset_hash, profile):
+            return False
+        selection = read_json(root / "runs" / run_id / "selection.json")
+        if (
+            not isinstance(selection, Mapping)
+            or selection.get("quality_mode") != payload.get("quality_mode")
+        ):
+            return False
+        expected_variants = {
+            variant.name: variant for variant in _quality_variants(selection)
+        }
+        if set(expected_variants) != required:
+            return False
         expected_ids: set[str] | None = None
-        for record in artifacts.values():
-            if not _record_is_valid(root, record):
+        for name, record in artifacts.items():
+            if not _experiment_record_is_complete(
+                root,
+                record,
+                expected_rows=len(make_cases(profile, "final")),
+                expected_variant=expected_variants[name],
+            ):
                 return False
             assert isinstance(record, Mapping)
             artifact_path = _verified_path(
@@ -1357,6 +1555,19 @@ def _perf_status_is_complete(
             "auto-4",
         }:
             return False
+        if not _selection_status_is_complete(root, run_id, dataset_hash, profile):
+            return False
+        selection = read_json(root / "runs" / run_id / "selection.json")
+        if not isinstance(selection, Mapping):
+            return False
+        expected_variants = {
+            variant.name: variant
+            for variant in (
+                Variant.bf16(),
+                Variant.fp8(),
+                Variant.mixed("auto-4", selection["auto_layers"]),
+            )
+        }
         expected_scenarios = len(build_benchmark_matrix(profile))
         expected_cases = [
             {
@@ -1376,7 +1587,7 @@ def _perf_status_is_complete(
             summary = read_json(summary_path)
             if (
                 not isinstance(summary, Mapping)
-                or summary.get("schema_version") != 2
+                or summary.get("schema_version") != 3
                 or summary.get("complete") is not True
                 or summary.get("run_id") != run_id
                 or not isinstance(summary.get("variant"), Mapping)
@@ -1388,6 +1599,7 @@ def _perf_status_is_complete(
                 or not _record_is_valid(root, summary.get("telemetry"))
                 or not _record_is_valid(root, summary.get("server_log"))
                 or not _record_is_valid(root, summary.get("command_record"))
+                or not _record_is_valid(root, summary.get("matrix_state"))
             ):
                 return False
             variant_raw = summary["variant"]
@@ -1397,6 +1609,8 @@ def _perf_status_is_complete(
                 tuple(int(layer) for layer in variant_raw.get("skip_layers", [])),
             )
             variant.validate_for_model(profile.model.num_layers)
+            if variant != expected_variants[name]:
+                return False
             actual_cases = []
             for scenario in summary["scenarios"]:
                 if not isinstance(scenario, Mapping) or not _record_is_valid(
@@ -1460,6 +1674,53 @@ def _perf_status_is_complete(
                 root, server_record.get("path"), server_record.get("sha256")
             )
             server_log = server_path.read_text(encoding="utf-8")
+            validate_server_log(
+                server_log, variant, num_layers=profile.model.num_layers
+            )
+            command_record = summary.get("command_record")
+            matrix_record = summary.get("matrix_state")
+            if not isinstance(command_record, Mapping) or not isinstance(
+                matrix_record, Mapping
+            ):
+                return False
+            command_path = _verified_path(
+                root,
+                command_record.get("path"),
+                command_record.get("sha256"),
+            )
+            command = read_json(command_path)
+            if (
+                not isinstance(command, Mapping)
+                or command.get("variant") != dict(variant_raw)
+                or not isinstance(command.get("inspected_server_argv"), list)
+            ):
+                return False
+            validate_container_command(
+                json.dumps(command["inspected_server_argv"]), variant
+            )
+            matrix_path = _verified_path(
+                root, matrix_record.get("path"), matrix_record.get("sha256")
+            )
+            matrix_state = read_json(matrix_path)
+            if (
+                not isinstance(matrix_state, Mapping)
+                or matrix_state.get("schema_version") != 1
+                or matrix_state.get("complete") is not True
+                or matrix_state.get("run_id") != run_id
+                or matrix_state.get("variant") != dict(variant_raw)
+                or matrix_state.get("image_digest") != summary.get("image_digest")
+                or matrix_state.get("model_revision")
+                != summary.get("model_revision")
+                or matrix_state.get("scenarios") != summary.get("scenarios")
+            ):
+                return False
+            matrix_telemetry = matrix_state.get("telemetry")
+            if not isinstance(matrix_telemetry, Mapping) or (
+                matrix_telemetry.get("path") != telemetry_record.get("path")
+                or matrix_telemetry.get("sha256")
+                != telemetry_record.get("sha256")
+            ):
+                return False
             if (
                 parse_capacity_tokens(server_log) != measured_capacity
                 or summary.get("capacity_validation")

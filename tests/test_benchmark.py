@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autokv.benchmark import BenchmarkRunner, build_benchmark_matrix, parse_capacity_tokens
+from autokv.benchmark import (
+    BenchmarkRunner,
+    Capacity,
+    build_benchmark_matrix,
+    capacity_validation,
+    parse_capacity_tokens,
+)
 from autokv.commands import CommandResult
 from autokv.config import Profile
 from autokv.io import read_json
@@ -38,7 +44,63 @@ class FakeTelemetry:
             stream.write("20260825 12:00:00 0 180 70 95 40 6000 1800 32000\n")
 
 
+class FailingStopTelemetry(FakeTelemetry):
+    def stop(self):
+        super().stop()
+        raise RuntimeError("telemetry stop failed")
+
+
 class BenchmarkTests(unittest.TestCase):
+    def test_theoretical_capacity_uses_two_bytes_for_bf16(self):
+        profile = Profile.from_dict(Profile.default_dict("quick"))
+        log = "GPU KV cache size: 131,072 tokens\n"
+        bf16 = capacity_validation(
+            profile, Variant.bf16(), Capacity(131072, None, None), log
+        )
+        fp8 = capacity_validation(
+            profile,
+            Variant.fp8(),
+            Capacity(262144, None, None),
+            log.replace("131,072", "262,144"),
+        )
+        mixed = capacity_validation(
+            profile,
+            Variant.mixed("auto-4", (2, 7, 18, 29)),
+            Capacity(233016, None, None),
+            log.replace("131,072", "233,016"),
+        )
+        self.assertEqual(bf16["bytes_per_token"], 131072)
+        self.assertEqual(bf16["theoretical_tokens"], 131072)
+        self.assertEqual(fp8["theoretical_tokens"], 262144)
+        self.assertEqual(mixed["theoretical_tokens"], 233016)
+
+    def test_large_capacity_deviation_requires_quantitative_runtime_evidence(self):
+        profile = Profile.from_dict(Profile.default_dict("quick"))
+        unexplained = capacity_validation(
+            profile,
+            Variant.fp8(),
+            Capacity(131072, None, None),
+            "GPU KV cache size: 131,072 tokens\nblock manager initialized\n",
+        )
+        self.assertFalse(unexplained["within_10_percent"])
+        self.assertFalse(unexplained["evidence_complete"])
+        self.assertEqual(unexplained["quantitative_explanations"], [])
+
+        explained = capacity_validation(
+            profile,
+            Variant.fp8(),
+            Capacity(131072, None, None),
+            (
+                "Available KV cache memory: 8.00 GiB\n"
+                "GPU KV cache size: 131,072 tokens\n"
+            ),
+        )
+        self.assertTrue(explained["evidence_complete"])
+        self.assertEqual(
+            explained["alignment_evidence"][0]["kind"],
+            "available_kv_memory",
+        )
+
     def test_parses_vllm_capacity_log(self):
         log = (
             "GPU KV cache size: 233,104 tokens\n"
@@ -71,7 +133,7 @@ class BenchmarkTests(unittest.TestCase):
             root = Path(directory)
             calls = []
             timed_out_once = False
-            timed_out_bench_name = None
+            containers = {}
             skipped = {2, 7, 18, 29}
             layer_log = "\n".join(
                 "Layer model.layers."
@@ -96,7 +158,7 @@ class BenchmarkTests(unittest.TestCase):
             )
 
             def fake_runner(argv, timeout=None, **kwargs):
-                nonlocal timed_out_bench_name, timed_out_once
+                nonlocal timed_out_once
                 calls.append(tuple(argv))
                 if tuple(argv[:2]) == ("docker", "logs"):
                     return command_result(
@@ -113,22 +175,35 @@ class BenchmarkTests(unittest.TestCase):
                     if "{{json .Config.Cmd}}" in argv:
                         return command_result(argv, stdout=inspected_command)
                     if "State.Running" in " ".join(argv):
-                        if argv[-1] == timed_out_bench_name:
+                        if argv[-1] in containers:
                             return command_result(
-                                argv, stdout="autokv-skip|true\n"
+                                argv,
+                                stdout=(
+                                    "autokv-skip|"
+                                    f"{'true' if containers[argv[-1]] else 'false'}\n"
+                                ),
                             )
                         return command_result(
                             argv, returncode=1, stderr="No such object"
                         )
                     return command_result(argv, stdout="autokv-skip\n")
+                if tuple(argv[:3]) == ("docker", "run", "-d"):
+                    containers[argv[argv.index("--name") + 1]] = True
+                    return command_result(argv)
+                if tuple(argv[:2]) == ("docker", "stop"):
+                    stopped_name = argv[-1]
+                    if stopped_name.startswith("autokv-bench-"):
+                        containers.pop(stopped_name, None)
+                    elif stopped_name in containers:
+                        containers[stopped_name] = False
+                    return command_result(argv)
                 if tuple(argv[:2]) == ("docker", "rm"):
-                    if argv[-1] == timed_out_bench_name:
-                        timed_out_bench_name = None
+                    containers.pop(argv[-1], None)
                     return command_result(argv)
                 if "bench" in argv:
                     if not timed_out_once:
                         timed_out_once = True
-                        timed_out_bench_name = argv[argv.index("--name") + 1]
+                        containers[argv[argv.index("--name") + 1]] = True
                         return command_result(argv, returncode=124, stderr="timed out")
                     container_dir = argv[argv.index("--result-dir") + 1]
                     filename = argv[argv.index("--result-filename") + 1]
@@ -160,10 +235,24 @@ class BenchmarkTests(unittest.TestCase):
                 telemetry_factory=FakeTelemetry,
             )
             variant = Variant.mixed("auto-4", (2, 7, 18, 29))
-            _, _, _, result_directory = runner._paths("abc123", variant)
+            summary_candidate, _, _, result_directory = runner._paths(
+                "abc123", variant
+            )
             result_directory.mkdir(parents=True, exist_ok=True)
-            (result_directory / "in1024-out32-rep0.json").write_text(
-                "{}", encoding="utf-8"
+            for case in build_benchmark_matrix(profile):
+                (result_directory / (
+                    f"in{case.input_length}-out{case.output_length}-"
+                    f"rep{case.repeat}.json"
+                )).write_text(
+                    json.dumps({"request_throughput": 99.0}),
+                    encoding="utf-8",
+                )
+            summary_candidate.with_name(
+                summary_candidate.name.removesuffix(".summary.json")
+                + ".dmon.log"
+            ).write_text(
+                "20260825 12:00:00 0 180 70 95 40 6000 1800 32000\n",
+                encoding="utf-8",
             )
             summary_path = runner.run_variant(
                 variant,
@@ -182,6 +271,12 @@ class BenchmarkTests(unittest.TestCase):
             )
             self.assertEqual(summary["capacity_validation"]["measured_tokens"], 233104)
             self.assertTrue(summary["capacity_validation"]["within_10_percent"])
+            matrix_state = root / summary["matrix_state"]["path"]
+            self.assertTrue(matrix_state.is_file())
+            self.assertEqual(
+                summary["matrix_state"]["sha256"],
+                hashlib.sha256(matrix_state.read_bytes()).hexdigest(),
+            )
             telemetry = root / summary["telemetry"]["path"]
             self.assertTrue(telemetry.is_file())
             self.assertEqual(
@@ -228,6 +323,137 @@ class BenchmarkTests(unittest.TestCase):
             forced.run_variant(variant, run_id="abc123", port=8000)
             archived = list((root / "runs" / "abc123" / "_superseded").rglob("*.summary.json"))
             self.assertEqual(len(archived), 1)
+
+    def test_telemetry_failure_still_removes_the_server_container(self):
+        profile = Profile.from_dict(Profile.default_dict("quick"))
+        lock = {
+            "image_ref": "vllm/vllm-openai@sha256:" + "f" * 64,
+            "image_digest": "sha256:" + "f" * 64,
+            "model_revision": "a" * 40,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            containers = {}
+            calls = []
+            inspected = json.dumps(
+                [
+                    "--attention-backend",
+                    "FLASHINFER",
+                    "--kv-cache-dtype",
+                    "fp8_e4m3",
+                    "--calculate-kv-scales",
+                ]
+            )
+
+            def runner(argv, timeout=None, **kwargs):
+                calls.append(tuple(argv))
+                if tuple(argv[:2]) == ("docker", "logs"):
+                    return command_result(
+                        argv,
+                        stdout=(
+                            "Using FLASHINFER backend\n"
+                            "Using fp8_e4m3 data type to store kv cache.\n"
+                            "GPU KV cache size: 262,144 tokens\n"
+                        ),
+                    )
+                if tuple(argv[:2]) == ("docker", "inspect"):
+                    if "{{json .Config.Cmd}}" in argv:
+                        return command_result(argv, stdout=inspected)
+                    if argv[-1] not in containers:
+                        return command_result(
+                            argv, returncode=1, stderr="No such object"
+                        )
+                    return command_result(
+                        argv,
+                        stdout=(
+                            "autokv-skip|"
+                            f"{'true' if containers[argv[-1]] else 'false'}\n"
+                        ),
+                    )
+                if tuple(argv[:3]) == ("docker", "run", "-d"):
+                    containers[argv[argv.index("--name") + 1]] = True
+                    return command_result(argv)
+                if tuple(argv[:2]) == ("docker", "stop"):
+                    containers[argv[-1]] = False
+                    return command_result(argv)
+                if tuple(argv[:2]) == ("docker", "rm"):
+                    containers.pop(argv[-1], None)
+                    return command_result(argv)
+                if "bench" in argv:
+                    container_dir = argv[argv.index("--result-dir") + 1]
+                    filename = argv[argv.index("--result-filename") + 1]
+                    relative = Path(
+                        container_dir.removeprefix("/workspace/autokv-skip/")
+                    )
+                    result_path = root / relative / filename
+                    result_path.parent.mkdir(parents=True, exist_ok=True)
+                    result_path.write_text(
+                        json.dumps({"request_throughput": 1.0}),
+                        encoding="utf-8",
+                    )
+                return command_result(argv)
+
+            benchmark = BenchmarkRunner(
+                profile,
+                root,
+                lock,
+                command_runner=runner,
+                client_factory=lambda base_url, model_id: FakeClient(),
+                telemetry_factory=FailingStopTelemetry,
+            )
+            with self.assertRaisesRegex(RuntimeError, "telemetry stop failed"):
+                benchmark.run_variant(Variant.fp8(), run_id="cleanup", port=8000)
+            self.assertEqual(containers, {})
+            self.assertTrue(
+                any(call[:2] == ("docker", "stop") for call in calls)
+            )
+
+    def test_detached_start_timeout_cleans_a_created_server_container(self):
+        profile = Profile.from_dict(Profile.default_dict("quick"))
+        lock = {
+            "image_ref": "vllm/vllm-openai@sha256:" + "f" * 64,
+            "image_digest": "sha256:" + "f" * 64,
+            "model_revision": "a" * 40,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            containers = {}
+
+            def runner(argv, timeout=None, **kwargs):
+                if tuple(argv[:2]) == ("docker", "inspect"):
+                    if argv[-1] not in containers:
+                        return command_result(
+                            argv, returncode=1, stderr="No such object"
+                        )
+                    return command_result(
+                        argv,
+                        stdout=(
+                            "autokv-skip|"
+                            f"{'true' if containers[argv[-1]] else 'false'}\n"
+                        ),
+                    )
+                if tuple(argv[:3]) == ("docker", "run", "-d"):
+                    containers[argv[argv.index("--name") + 1]] = True
+                    return command_result(argv, returncode=124, stderr="timed out")
+                if tuple(argv[:2]) == ("docker", "stop"):
+                    containers[argv[-1]] = False
+                    return command_result(argv)
+                if tuple(argv[:2]) == ("docker", "rm"):
+                    containers.pop(argv[-1], None)
+                    return command_result(argv)
+                return command_result(argv)
+
+            benchmark = BenchmarkRunner(
+                profile,
+                root,
+                lock,
+                command_runner=runner,
+                client_factory=lambda base_url, model_id: FakeClient(),
+                telemetry_factory=FakeTelemetry,
+            )
+            with self.assertRaisesRegex(RuntimeError, "docker run failed"):
+                benchmark.run_variant(Variant.fp8(), run_id="start-timeout", port=8000)
+            self.assertEqual(containers, {})
 
 
 if __name__ == "__main__":

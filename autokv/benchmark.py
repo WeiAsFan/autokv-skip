@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import itertools
+import json
 import re
 import statistics
 import subprocess
+import sys
 from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,7 +30,7 @@ from autokv.experiment import (
     inspect_container_command,
     safe_cleanup_owned_container,
     safe_remove_stale_container,
-    safe_stop_container,
+    validate_container_command,
     validate_server_log,
 )
 from autokv.io import (
@@ -234,7 +236,7 @@ def _kv_budget_bytes(value: str) -> int:
 def _bytes_per_token(profile: Profile, variant: Variant) -> int:
     dtype_bytes_by_layer = (
         profile.model.num_layers * 2
-        if variant.kv_dtype == "auto"
+        if variant.kv_dtype == "bfloat16"
         else profile.model.num_layers + len(variant.skip_layers)
     )
     return (
@@ -252,20 +254,68 @@ def capacity_validation(
     bytes_per_token = _bytes_per_token(profile, variant)
     theoretical_tokens = budget_bytes // bytes_per_token
     relative_deviation = abs(capacity.tokens - theoretical_tokens) / theoretical_tokens
-    evidence = [
+    runtime_evidence = [
         line.strip()
         for line in server_log.splitlines()
         if re.search(
-            r"(?:GPU KV cache|cache memory|kv_cache_memory|\bblocks?\b|\bpages?\b)",
+            r"(?:GPU KV cache|cache memory|kv_cache_memory|padding layers|\bblocks?\b|\bpages?\b)",
             line,
             flags=re.IGNORECASE,
         )
     ]
-    page_or_block = [
-        line
-        for line in evidence
-        if re.search(r"\b(?:blocks?|pages?)\b", line, flags=re.IGNORECASE)
-    ]
+    alignment_evidence: list[dict[str, Any]] = []
+    quantitative_explanations: list[str] = []
+    explanation_margin = 0.02
+    signed_shortfall = (theoretical_tokens - capacity.tokens) / theoretical_tokens
+
+    padding_pattern = re.compile(
+        r"Add\s+(\d+)\s+padding layers?.*?waste at most\s+([\d.]+)%\s+KV cache memory",
+        flags=re.IGNORECASE,
+    )
+    available_pattern = re.compile(
+        r"Available KV cache memory:\s*([\d.]+)\s*(KiB|MiB|GiB)",
+        flags=re.IGNORECASE,
+    )
+    unit_bytes = {"kib": 1024, "mib": 1024**2, "gib": 1024**3}
+    for line in runtime_evidence:
+        padding = padding_pattern.search(line)
+        if padding is not None:
+            max_waste_fraction = float(padding.group(2)) / 100.0
+            record = {
+                "kind": "padding_waste_bound",
+                "padding_layers": int(padding.group(1)),
+                "max_waste_fraction": max_waste_fraction,
+                "line": line,
+            }
+            alignment_evidence.append(record)
+            if (
+                signed_shortfall > 0.10
+                and signed_shortfall <= max_waste_fraction + explanation_margin
+            ):
+                quantitative_explanations.append(
+                    "measured shortfall is bounded by the logged maximum padding waste"
+                )
+        available = available_pattern.search(line)
+        if available is not None:
+            available_bytes = int(
+                float(available.group(1)) * unit_bytes[available.group(2).lower()]
+            )
+            predicted_tokens = available_bytes // bytes_per_token
+            prediction_error = (
+                abs(capacity.tokens - predicted_tokens) / theoretical_tokens
+            )
+            record = {
+                "kind": "available_kv_memory",
+                "available_bytes": available_bytes,
+                "predicted_tokens": predicted_tokens,
+                "prediction_error_vs_budget_theory": prediction_error,
+                "line": line,
+            }
+            alignment_evidence.append(record)
+            if relative_deviation > 0.10 and prediction_error <= explanation_margin:
+                quantitative_explanations.append(
+                    "measured tokens agree with the logged available KV memory"
+                )
     within_tolerance = relative_deviation <= 0.10
     return {
         "kv_budget_bytes": budget_bytes,
@@ -274,9 +324,11 @@ def capacity_validation(
         "measured_tokens": capacity.tokens,
         "relative_deviation": relative_deviation,
         "within_10_percent": within_tolerance,
-        "runtime_evidence": evidence,
-        "page_or_block_evidence": page_or_block,
-        "evidence_complete": within_tolerance or bool(page_or_block),
+        "runtime_evidence": runtime_evidence,
+        "alignment_evidence": alignment_evidence,
+        "quantitative_explanations": quantitative_explanations,
+        "explanation_margin": explanation_margin,
+        "evidence_complete": within_tolerance or bool(quantitative_explanations),
     }
 
 
@@ -343,15 +395,90 @@ class BenchmarkRunner:
             directory,
         )
 
+    @staticmethod
+    def _matrix_state_path(summary_path: Path) -> Path:
+        return summary_path.with_name(
+            summary_path.name.removesuffix(".summary.json")
+            + ".matrix.state.json"
+        )
+
+    def _matrix_state_is_complete(
+        self,
+        state_path: Path,
+        *,
+        run_id: str,
+        variant: Variant,
+        telemetry_path: Path,
+        result_directory: Path,
+    ) -> bool:
+        try:
+            state = read_json(state_path)
+            matrix = build_benchmark_matrix(self.profile)
+            expected_variant = {
+                "name": variant.name,
+                "kv_dtype": variant.kv_dtype,
+                "skip_layers": list(variant.skip_layers),
+            }
+            if (
+                not isinstance(state, Mapping)
+                or state.get("schema_version") != 1
+                or state.get("complete") is not True
+                or state.get("run_id") != run_id
+                or state.get("variant") != expected_variant
+                or state.get("image_digest") != self.lock["image_digest"]
+                or state.get("model_revision") != self.lock["model_revision"]
+            ):
+                return False
+            telemetry = state.get("telemetry")
+            if not isinstance(telemetry, Mapping):
+                return False
+            if telemetry.get("path") != telemetry_path.relative_to(
+                self.project_root
+            ).as_posix() or telemetry.get("sha256") != sha256_file(telemetry_path):
+                return False
+            if not telemetry_is_usable(telemetry_path):
+                return False
+            scenarios = state.get("scenarios")
+            if not isinstance(scenarios, list) or len(scenarios) != len(matrix):
+                return False
+            for case, scenario in zip(matrix, scenarios):
+                if not isinstance(scenario, Mapping):
+                    return False
+                raw_path = result_directory / (
+                    f"in{case.input_length}-out{case.output_length}-rep{case.repeat}.json"
+                )
+                if (
+                    scenario.get("input_length") != case.input_length
+                    or scenario.get("output_length") != case.output_length
+                    or scenario.get("repeat") != case.repeat
+                    or scenario.get("raw_result")
+                    != raw_path.relative_to(self.project_root).as_posix()
+                    or scenario.get("sha256") != sha256_file(raw_path)
+                ):
+                    return False
+                payload = read_json(raw_path)
+                if not isinstance(payload, Mapping) or scenario.get(
+                    "metrics"
+                ) != extract_performance_metrics(payload):
+                    return False
+            return True
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+
     def _is_complete(
-        self, summary_path: Path, expected_scenarios: int, variant: Variant
+        self,
+        summary_path: Path,
+        run_id: str,
+        expected_scenarios: int,
+        variant: Variant,
     ) -> bool:
         try:
             summary = read_json(summary_path)
             if (
                 not isinstance(summary, Mapping)
-                or summary.get("schema_version") != 2
+                or summary.get("schema_version") != 3
                 or summary.get("complete") is not True
+                or summary.get("run_id") != run_id
             ):
                 return False
             expected_variant = {
@@ -392,7 +519,12 @@ class BenchmarkRunner:
                 return False
             if summary.get("scenario_groups") != aggregate_scenario_groups(scenarios):
                 return False
-            for artifact_key in ("telemetry", "server_log", "command_record"):
+            for artifact_key in (
+                "telemetry",
+                "server_log",
+                "command_record",
+                "matrix_state",
+            ):
                 record = summary.get(artifact_key)
                 if not isinstance(record, Mapping):
                     return False
@@ -424,11 +556,55 @@ class BenchmarkRunner:
                 self.project_root, self.project_root / str(server_record["path"])
             )
             server_log = server_path.read_text(encoding="utf-8")
+            validate_server_log(
+                server_log, variant, num_layers=self.profile.model.num_layers
+            )
+            command_record = summary["command_record"]
+            assert isinstance(command_record, Mapping)
+            command_path = ensure_within(
+                self.project_root,
+                self.project_root / str(command_record["path"]),
+            )
+            command = read_json(command_path)
+            if not isinstance(command, Mapping) or not isinstance(
+                command.get("inspected_server_argv"), list
+            ):
+                return False
+            validate_container_command(
+                json.dumps(command["inspected_server_argv"]), variant
+            )
             if parse_capacity_tokens(server_log) != observed_capacity:
                 return False
             if summary.get("capacity_validation") != capacity_validation(
                 self.profile, variant, observed_capacity, server_log
             ):
+                return False
+            matrix_record = summary["matrix_state"]
+            telemetry_record = summary["telemetry"]
+            assert isinstance(matrix_record, Mapping)
+            assert isinstance(telemetry_record, Mapping)
+            matrix_path = ensure_within(
+                self.project_root,
+                self.project_root / str(matrix_record["path"]),
+            )
+            telemetry_path = ensure_within(
+                self.project_root,
+                self.project_root / str(telemetry_record["path"]),
+            )
+            if not self._matrix_state_is_complete(
+                matrix_path,
+                run_id=run_id,
+                variant=variant,
+                telemetry_path=telemetry_path,
+                result_directory=summary_path.with_name(
+                    summary_path.name.removesuffix(".summary.json")
+                ),
+            ):
+                return False
+            matrix_state = read_json(matrix_path)
+            if not isinstance(matrix_state, Mapping) or matrix_state.get(
+                "scenarios"
+            ) != scenarios:
                 return False
             return True
         except (KeyError, OSError, TypeError, ValueError):
@@ -453,6 +629,7 @@ class BenchmarkRunner:
         telemetry_path = summary_path.with_name(
             summary_path.name.removesuffix(".summary.json") + ".dmon.log"
         )
+        matrix_state_path = self._matrix_state_path(summary_path)
         config_id = canonical_config_id(variant)
         force_key = (run_id, config_id)
         if self.force_config_id == config_id and force_key not in self._forced_keys:
@@ -466,11 +643,12 @@ class BenchmarkRunner:
                     log_path,
                     command_path,
                     telemetry_path,
+                    matrix_state_path,
                     result_directory,
                 ),
             )
             self._forced_keys.add(force_key)
-        if self._is_complete(summary_path, len(matrix), variant):
+        if self._is_complete(summary_path, run_id, len(matrix), variant):
             return summary_path
         if summary_path.exists():
             raise ValueError(
@@ -510,21 +688,18 @@ class BenchmarkRunner:
                 )
             )
         telemetry = self.telemetry_factory(telemetry_path)
-        cached_matrix_complete = telemetry_is_usable(telemetry_path)
-        if cached_matrix_complete:
-            for case in matrix:
-                raw_path = result_directory / (
-                    f"in{case.input_length}-out{case.output_length}-rep{case.repeat}.json"
-                )
-                try:
-                    cached_payload = read_json(raw_path)
-                    if not isinstance(cached_payload, Mapping):
-                        cached_matrix_complete = False
-                        break
-                    extract_performance_metrics(cached_payload)
-                except (OSError, TypeError, ValueError):
-                    cached_matrix_complete = False
-                    break
+        cached_matrix_complete = self._matrix_state_is_complete(
+            matrix_state_path,
+            run_id=run_id,
+            variant=variant,
+            telemetry_path=telemetry_path,
+            result_directory=result_directory,
+        )
+        if matrix_state_path.exists() and not cached_matrix_complete:
+            raise ValueError(
+                "benchmark matrix state integrity mismatch; preserve evidence and "
+                f"use --force {config_id}: {matrix_state_path}"
+            )
         command_record = {
             "server_argv": list(server_argv),
             "benchmark_argv": bench_commands,
@@ -549,6 +724,13 @@ class BenchmarkRunner:
             safe_remove_stale_container(name, self.command_runner)
             start_result = self.command_runner(server_argv, timeout=120)
             if not start_result.ok:
+                try:
+                    safe_cleanup_owned_container(name, self.command_runner)
+                except BaseException as cleanup_error:
+                    raise RuntimeError(
+                        f"docker run failed for benchmark {variant.name} and the "
+                        f"exact owned container could not be cleaned: {cleanup_error}"
+                    ) from cleanup_error
                 raise RuntimeError(
                     f"docker run failed for benchmark {variant.name}: "
                     f"{start_result.stderr[-1000:]}"
@@ -622,19 +804,86 @@ class BenchmarkRunner:
                     }
                 )
         finally:
+            primary_error = sys.exc_info()[1]
+            finalization_errors: list[tuple[str, BaseException]] = []
             if telemetry_started:
-                telemetry.stop()
+                try:
+                    telemetry.stop()
+                except BaseException as error:
+                    finalization_errors.append(("telemetry", error))
             if started:
                 try:
                     captured_log = self._logs(name) or captured_log
                     atomic_write_text(log_path, captured_log)
-                finally:
-                    safe_stop_container(name, self.command_runner)
+                except BaseException as error:
+                    finalization_errors.append(("server-log", error))
+                try:
+                    safe_cleanup_owned_container(name, self.command_runner)
+                except BaseException as error:
+                    finalization_errors.append(("container-cleanup", error))
+            cleanup_errors = [
+                error
+                for stage, error in finalization_errors
+                if stage == "container-cleanup"
+            ]
+            if primary_error is not None and cleanup_errors:
+                raise RuntimeError(
+                    "benchmark failed and exact owned server cleanup also failed: "
+                    f"{cleanup_errors[0]}"
+                ) from primary_error
+            if primary_error is None and cleanup_errors:
+                earlier_errors = [
+                    error
+                    for stage, error in finalization_errors
+                    if stage != "container-cleanup"
+                ]
+                if earlier_errors:
+                    raise RuntimeError(
+                        "benchmark finalization failed and exact owned server "
+                        f"cleanup also failed: {cleanup_errors[0]}"
+                    ) from earlier_errors[0]
+                raise cleanup_errors[0]
+            if primary_error is None and finalization_errors:
+                raise finalization_errors[0][1]
 
         if capacity is None:
             raise ValueError("benchmark server did not expose KV capacity")
         if not telemetry_is_usable(telemetry_path):
             raise ValueError("nvidia-smi dmon telemetry was not captured")
+        if len(scenarios) != len(matrix):
+            raise ValueError("benchmark matrix did not produce every registered scenario")
+        if not cached_matrix_complete:
+            atomic_write_json(
+                matrix_state_path,
+                {
+                    "schema_version": 1,
+                    "complete": True,
+                    "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "run_id": run_id,
+                    "variant": {
+                        "name": variant.name,
+                        "kv_dtype": variant.kv_dtype,
+                        "skip_layers": list(variant.skip_layers),
+                    },
+                    "image_digest": self.lock["image_digest"],
+                    "model_revision": model_revision,
+                    "telemetry": {
+                        "path": telemetry_path.relative_to(
+                            self.project_root
+                        ).as_posix(),
+                        "sha256": sha256_file(telemetry_path),
+                    },
+                    "scenarios": scenarios,
+                },
+            )
+        if not self._matrix_state_is_complete(
+            matrix_state_path,
+            run_id=run_id,
+            variant=variant,
+            telemetry_path=telemetry_path,
+            result_directory=result_directory,
+        ):
+            raise ValueError("benchmark matrix state failed its integrity check")
         values_by_metric: dict[str, list[float]] = {}
         for scenario in scenarios:
             for key, value in scenario["metrics"].items():
@@ -650,7 +899,7 @@ class BenchmarkRunner:
         atomic_write_json(
             summary_path,
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "complete": True,
                 "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                 "run_id": run_id,
@@ -681,6 +930,12 @@ class BenchmarkRunner:
                 "command_record": {
                     "path": command_path.relative_to(self.project_root).as_posix(),
                     "sha256": sha256_file(command_path),
+                },
+                "matrix_state": {
+                    "path": matrix_state_path.relative_to(
+                        self.project_root
+                    ).as_posix(),
+                    "sha256": sha256_file(matrix_state_path),
                 },
                 "scenarios": scenarios,
             },

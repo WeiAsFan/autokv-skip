@@ -90,34 +90,89 @@ def canonical_run_id(
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def mark_complete(state_path: Path, artifact: Path, expected_rows: int) -> None:
+def mark_complete(
+    state_path: Path,
+    artifact: Path,
+    expected_rows: int,
+    *,
+    evidence: Mapping[str, Path] | None = None,
+) -> None:
     rows = read_jsonl(artifact)
     if len(rows) != expected_rows:
         raise ValueError(
             f"cannot mark complete: expected {expected_rows} rows, observed {len(rows)}"
         )
+    evidence_records: dict[str, dict[str, str]] = {}
+    for key, path in sorted((evidence or {}).items()):
+        if not re.fullmatch(r"[a-z0-9_]+", key):
+            raise ValueError(f"invalid completion evidence key: {key}")
+        if path.parent.resolve() != state_path.parent.resolve() or not path.is_file():
+            raise ValueError(f"completion evidence is missing or misplaced: {path}")
+        evidence_records[key] = {
+            "path": path.name,
+            "sha256": sha256_file(path),
+        }
     atomic_write_json(
         state_path,
         {
+            "schema_version": 2,
             "complete": True,
             "artifact": artifact.name,
             "artifact_sha256": sha256_file(artifact),
             "rows": len(rows),
+            "evidence": evidence_records,
             "completed_at_utc": datetime.now(timezone.utc).isoformat(),
         },
     )
 
 
-def is_complete(state_path: Path, artifact: Path, expected_rows: int) -> bool:
+def is_complete(
+    state_path: Path,
+    artifact: Path,
+    expected_rows: int,
+    *,
+    evidence: Mapping[str, Path] | None = None,
+) -> bool:
     try:
         state = read_json(state_path)
         if not isinstance(state, Mapping) or state.get("complete") is not True:
             return False
-        if state.get("rows") != expected_rows or not artifact.is_file():
+        if (
+            state.get("artifact") != artifact.name
+            or state.get("rows") != expected_rows
+            or not artifact.is_file()
+        ):
             return False
         if state.get("artifact_sha256") != sha256_file(artifact):
             return False
-        return len(read_jsonl(artifact)) == expected_rows
+        if len(read_jsonl(artifact)) != expected_rows:
+            return False
+        observed_evidence = state.get("evidence", {})
+        if not isinstance(observed_evidence, Mapping):
+            return False
+        if evidence is not None and (
+            state.get("schema_version") != 2
+            or set(observed_evidence) != set(evidence)
+        ):
+            return False
+        expected_evidence = evidence or {
+            str(key): state_path.parent / str(record.get("path", ""))
+            for key, record in observed_evidence.items()
+            if isinstance(record, Mapping)
+        }
+        if set(expected_evidence) != set(observed_evidence):
+            return False
+        for key, path in expected_evidence.items():
+            record = observed_evidence.get(key)
+            if (
+                not isinstance(record, Mapping)
+                or path.parent.resolve() != state_path.parent.resolve()
+                or record.get("path") != path.name
+                or not path.is_file()
+                or record.get("sha256") != sha256_file(path)
+            ):
+                return False
+        return True
     except (OSError, ValueError, TypeError):
         return False
 
@@ -181,8 +236,10 @@ def inspect_container_command(
 
 def validate_server_log(log: str, variant: Variant, num_layers: int = 32) -> None:
     upper = log.upper()
-    if "FLASHINFER" not in upper:
-        raise ValueError("server log does not confirm FLASHINFER")
+    if not re.search(
+        r"\bUSING\s+(?:ATTENTIONBACKENDENUM\.)?FLASHINFER\s+BACKEND\b", upper
+    ):
+        raise ValueError("server log does not confirm the active FLASHINFER backend")
     if not re.search(r"GPU KV CACHE SIZE:\s*[\d,]+\s*TOKENS", upper):
         raise ValueError("server log does not contain GPU KV cache token capacity")
     fp8_message = "USING FP8_E4M3 DATA TYPE TO STORE KV CACHE"
@@ -190,6 +247,10 @@ def validate_server_log(log: str, variant: Variant, num_layers: int = 32) -> Non
         raise ValueError("server log does not confirm exact FP8 E4M3 KV cache")
     if variant.kv_dtype == "bfloat16" and fp8_message in upper:
         raise ValueError("BF16 server log unexpectedly confirms FP8 E4M3 KV cache")
+    if variant.kv_dtype == "bfloat16" and not re.search(
+        r"\bKV_CACHE_DTYPE\s*=\s*['\"]?BFLOAT16\b['\"]?", upper
+    ):
+        raise ValueError("server log does not positively confirm BF16 KV cache")
     if not variant.skip_layers:
         return
     observed: dict[int, str] = {}
@@ -249,7 +310,10 @@ def _owned_container_running(name: str, runner: Runner) -> bool | None:
     )
     inspected = runner(inspect_argv, timeout=30)
     if not inspected.ok:
-        return None
+        combined = f"{inspected.stdout}\n{inspected.stderr}"
+        if re.search(r"no such (?:object|container)", combined, re.IGNORECASE):
+            return None
+        raise RuntimeError(f"cannot inspect existing container state: {name}")
     fields = inspected.stdout.strip().split("|")
     if len(fields) != 2:
         raise RuntimeError(f"cannot parse existing container ownership/state: {name}")
@@ -285,6 +349,11 @@ def safe_cleanup_owned_container(name: str, runner: Runner = run_command) -> Non
         stopped = runner(("docker", "stop", "--time", "30", name), timeout=60)
         if not stopped.ok:
             raise RuntimeError(f"failed to stop timed-out AutoKV container: {name}")
+        running = _owned_container_running(name, runner)
+        if running is None:
+            return
+        if running:
+            raise RuntimeError(f"timed-out AutoKV container is still running: {name}")
     removed = runner(("docker", "rm", name), timeout=30)
     if not removed.ok:
         raise RuntimeError(f"failed to remove timed-out AutoKV container: {name}")
@@ -494,6 +563,10 @@ class ExperimentRunner:
         artifact, state_path, log_path, command_path = self._paths(
             run_id, phase, variant
         )
+        completion_evidence = {
+            "server_log": log_path,
+            "command_record": command_path,
+        }
         config_id = canonical_config_id(variant)
         force_key = (run_id, phase, config_id)
         if self.force_config_id == config_id and force_key not in self._forced_keys:
@@ -506,7 +579,12 @@ class ExperimentRunner:
             )
             self._forced_keys.add(force_key)
         expected_rows = len(cases)
-        complete = is_complete(state_path, artifact, expected_rows)
+        complete = is_complete(
+            state_path,
+            artifact,
+            expected_rows,
+            evidence=completion_evidence,
+        )
         if state_path.exists() and not complete:
             raise ValueError(
                 f"completed state integrity mismatch; preserve evidence and use "
@@ -562,6 +640,13 @@ class ExperimentRunner:
             safe_remove_stale_container(name, self.command_runner)
             start_result = self.command_runner(argv, timeout=120)
             if not start_result.ok:
+                try:
+                    safe_cleanup_owned_container(name, self.command_runner)
+                except BaseException as cleanup_error:
+                    raise RuntimeError(
+                        f"docker run failed for {variant.name} and the exact owned "
+                        f"container could not be cleaned: {cleanup_error}"
+                    ) from cleanup_error
                 raise RuntimeError(
                     f"docker run failed for {variant.name}: {start_result.stderr[-1000:]}"
                 )
@@ -666,8 +751,13 @@ class ExperimentRunner:
                     captured_log = self._logs(name) or captured_log
                     atomic_write_text(log_path, captured_log)
                 finally:
-                    safe_stop_container(name, self.command_runner)
+                    safe_cleanup_owned_container(name, self.command_runner)
 
         if completed:
-            mark_complete(state_path, artifact, expected_rows)
+            mark_complete(
+                state_path,
+                artifact,
+                expected_rows,
+                evidence=completion_evidence,
+            )
         return artifact
