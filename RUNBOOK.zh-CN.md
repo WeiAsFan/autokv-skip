@@ -30,11 +30,23 @@
 
 推荐使用交付物 `autokv-skip-server-bundle.tar.gz` 和同名 `.sha256` 文件。它不含模型、运行结果或 `.git`，但包含完整源码、冻结配置、测试、调研和手册。先在能看到交付物的工作站执行（把登录名和地址替换为自己的）：
 
+Linux/macOS 工作站：
+
 ```bash
 sha256sum -c autokv-skip-server-bundle.tar.gz.sha256
 scp autokv-skip-server-bundle.tar.gz \
   autokv-skip-server-bundle.tar.gz.sha256 \
   LOGIN_NAME@SERVER_ADDRESS:~/
+```
+
+当前工作区所在的 Windows PowerShell 工作站可执行：
+
+```powershell
+$bundle = "autokv-skip-server-bundle.tar.gz"
+$expected = ((Get-Content "$bundle.sha256" -Raw) -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash $bundle -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "bundle SHA-256 mismatch" }
+scp $bundle "$bundle.sha256" "LOGIN_NAME@SERVER_ADDRESS`:~/"
 ```
 
 第一次登录服务器后执行：
