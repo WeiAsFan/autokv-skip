@@ -42,6 +42,7 @@ Auto-4 理论容量 / BF16 = 131072 / 73728     = 1.7778×
 - **本地代码验证**：标准库单元测试、伪 HTTP 服务、伪 Docker 生命周期、恢复状态、命令转义、报告渲染、quick/full dry-run 和静态安全扫描可在无 GPU 的机器完成。
 - **目标服务器尚未验证**：真实 R535 forward compatibility、目标镜像拉取、FlashInfer + FP8、逐层 skip、真实 KV capacity 和 quick 实验数值，必须等能够访问 A6000 服务器后按运行手册执行。
 - 因此，本仓库中的代码通过不等于 GPU 实验已经成功。任何报告数值都只能来自 `runs/<run-id>/` 的真实产物，不能预填或臆造。
+- 质量 NIAH 请求为非流式：原始 JSONL 的 `ttft_ms=null`、`e2e_ms` 为完整请求耗时；TTFT/TPOT/ITL 仅来自 `vllm bench serve` 性能产物。
 
 ## 从哪里开始
 

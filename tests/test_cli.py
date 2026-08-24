@@ -15,7 +15,8 @@ from autokv.cli import (
     _write_completion_manifest,
 )
 from autokv.config import Profile
-from autokv.selection import Variant, group_probe_variants
+from autokv.niah import NiahCase, expected_answer, make_cases
+from autokv.selection import Variant, canonical_config_id, group_probe_variants
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +146,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(data["benchmark_scenarios"], 6)
         self.assertFalse(data["executed"])
         self.assertIn("VLLM_ENABLE_CUDA_COMPATIBILITY=1", data["server_command_example"])
+        self.assertEqual(
+            set(data["server_commands"]),
+            {"bf16", "fp8", "auto-4-placeholder"},
+        )
+        self.assertIn("--kv-cache-dtype bfloat16", data["server_commands"]["bf16"])
+        self.assertIn("--kv-cache-dtype fp8_e4m3", data["server_commands"]["fp8"])
+        self.assertIn(
+            "--kv-cache-dtype-skip-layers 0 1 2 3",
+            data["server_commands"]["auto-4-placeholder"],
+        )
+        self.assertIn("bench serve", data["benchmark_command_example"])
+        self.assertIn(
+            "runs/<immutable-run-id>/perf/*.matrix.state.json",
+            data["planned_artifacts"],
+        )
         self.assertNotIn("docker was executed", result.stderr.lower())
 
     def test_full_dry_run_has_thirty_four_core_configurations(self):
@@ -333,12 +349,15 @@ class CliTests(unittest.TestCase):
             made_payload = json.loads(made.stdout)
             environment = root / "runs" / "_environment"
             environment.mkdir(parents=True)
+            image_ref = "vllm/vllm-openai@sha256:" + "f" * 64
+            image_digest = "sha256:" + "f" * 64
+            model_revision = "a" * 40
             (environment / "lock.json").write_text(
                 json.dumps(
                     {
-                        "image_ref": "vllm/vllm-openai@sha256:" + "f" * 64,
-                        "image_digest": "sha256:" + "f" * 64,
-                        "model_revision": "a" * 40,
+                        "image_ref": image_ref,
+                        "image_digest": image_digest,
+                        "model_revision": model_revision,
                         "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
                         "host": {"driver": "535.230.02"},
                     }
@@ -354,11 +373,45 @@ class CliTests(unittest.TestCase):
                 "--json",
             )
             run_id = json.loads(status.stdout)["run_id"]
+            profile = Profile.from_dict(Profile.default_dict("quick"))
             smoke_dir = root / "runs" / run_id / "smoke"
             smoke_dir.mkdir(parents=True)
 
+            def experiment_row(
+                case: NiahCase, variant: Variant, quality: float
+            ) -> dict[str, object]:
+                answer = expected_answer(case.code)
+                return {
+                    "schema_version": 1,
+                    "run_id": run_id,
+                    "config_id": canonical_config_id(variant),
+                    "image_digest": image_digest,
+                    "model_revision": model_revision,
+                    "backend": "FLASHINFER",
+                    "kv_dtype": variant.kv_dtype,
+                    "skip_layers": list(variant.skip_layers),
+                    "seed": case.seed,
+                    "sample_id": case.sample_id,
+                    "prompt_tokens": case.target_tokens,
+                    "output_tokens": 1,
+                    "needle_depth": case.depth,
+                    "expected": answer,
+                    "output_text": answer,
+                    "exact_match": 1.0,
+                    "edit_distance": 0,
+                    "answer_nll": None,
+                    "quality_mode": "edit_distance",
+                    "quality_score": quality,
+                    "ttft_ms": None,
+                    "e2e_ms": 1.0,
+                    "timestamp_utc": "2026-08-25T00:00:00+00:00",
+                }
+
             def add_completion_evidence(
-                path: Path, rows: int, variant: Variant
+                path: Path,
+                rows: int,
+                variant: Variant,
+                command_quality_mode: str,
             ):
                 server_log = path.with_suffix(".server.log")
                 command_record = path.with_suffix(".command.json")
@@ -402,6 +455,9 @@ class CliTests(unittest.TestCase):
                                 "kv_dtype": variant.kv_dtype,
                                 "skip_layers": list(variant.skip_layers),
                             },
+                            "image_ref": image_ref,
+                            "model_revision": model_revision,
+                            "quality_mode": command_quality_mode,
                             "inspected_argv": argv,
                         }
                     ),
@@ -437,13 +493,22 @@ class CliTests(unittest.TestCase):
                 )
 
             smoke_records = []
-            for name in ("first", "second"):
-                path = smoke_dir / f"{name}.jsonl"
+            smoke_case = NiahCase(
+                "smoke-1024-50-42", 1024, 0.5, 42, "KV-SMOKE-4242"
+            )
+            smoke_variant = Variant.fp8()
+            smoke_stem = (
+                f"{smoke_variant.name}-{canonical_config_id(smoke_variant)}.jsonl"
+            )
+            for phase in ("smoke-a", "smoke-b"):
+                path = root / "runs" / run_id / phase / smoke_stem
+                path.parent.mkdir(parents=True)
                 path.write_text(
-                    json.dumps({"quality_mode": "edit_distance"}) + "\n",
+                    json.dumps(experiment_row(smoke_case, smoke_variant, 1.0))
+                    + "\n",
                     encoding="utf-8",
                 )
-                add_completion_evidence(path, 1, Variant.fp8())
+                add_completion_evidence(path, 1, smoke_variant, "auto")
                 smoke_records.append(
                     {
                         "path": path.relative_to(root).as_posix(),
@@ -466,24 +531,23 @@ class CliTests(unittest.TestCase):
             probe_dir = root / "runs" / run_id / "probe"
             probe_dir.mkdir(parents=True)
             artifacts = {}
+            probe_cases = make_cases(profile, "probe")
 
             def add_artifact(variant: Variant, quality: float):
-                path = probe_dir / f"{variant.name}.jsonl"
+                path = probe_dir / (
+                    f"{variant.name}-{canonical_config_id(variant)}.jsonl"
+                )
                 path.write_text(
                     "".join(
-                        json.dumps(
-                            {
-                                "sample_id": f"sample-{index}",
-                                "quality_mode": "edit_distance",
-                                "quality_score": quality,
-                            }
-                        )
+                        json.dumps(experiment_row(case, variant, quality))
                         + "\n"
-                        for index in range(6)
+                        for case in probe_cases
                     ),
                     encoding="utf-8",
                 )
-                add_completion_evidence(path, 6, variant)
+                add_completion_evidence(
+                    path, len(probe_cases), variant, "edit_distance"
+                )
                 artifacts[variant.name] = {
                     "path": path.relative_to(root).as_posix(),
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -566,6 +630,80 @@ class CliTests(unittest.TestCase):
             self.assertTrue(valid_steps["probe"])
             self.assertTrue(valid_steps["select"])
 
+            probe_index_path = probe_dir / "index.json"
+            original_probe_index = probe_index_path.read_text(encoding="utf-8")
+            layer_variant = Variant.mixed("layer-00", (0,))
+            layer_path = probe_dir / (
+                f"{layer_variant.name}-{canonical_config_id(layer_variant)}.jsonl"
+            )
+            foreign_dir = root / "runs" / "foreign-run" / "probe"
+            foreign_dir.mkdir(parents=True)
+            foreign_layer_path = foreign_dir / layer_path.name
+            for source in (
+                layer_path,
+                layer_path.with_suffix(".state.json"),
+                layer_path.with_suffix(".server.log"),
+                layer_path.with_suffix(".command.json"),
+            ):
+                (foreign_dir / source.name).write_bytes(source.read_bytes())
+            redirected_index = json.loads(original_probe_index)
+            redirected_index["artifacts"]["layer-00"]["path"] = (
+                foreign_layer_path.relative_to(root).as_posix()
+            )
+            probe_index_path.write_text(
+                json.dumps(redirected_index), encoding="utf-8"
+            )
+            redirected_status = run_cli(
+                "status",
+                "--project-root",
+                str(root),
+                "--profile",
+                "quick",
+                "--json",
+            )
+            self.assertEqual(
+                redirected_status.returncode, 0, redirected_status.stderr
+            )
+            redirected_steps = json.loads(redirected_status.stdout)["steps"]
+            self.assertTrue(redirected_steps["smoke"])
+            self.assertFalse(redirected_steps["probe"])
+            self.assertFalse(redirected_steps["select"])
+            probe_index_path.write_text(original_probe_index, encoding="utf-8")
+
+            original_layer = layer_path.read_text(encoding="utf-8")
+            layer_state_path = layer_path.with_suffix(".state.json")
+            original_layer_state = layer_state_path.read_text(encoding="utf-8")
+            forged_rows = [json.loads(line) for line in original_layer.splitlines()]
+            for row in forged_rows:
+                row["run_id"] = "foreign-run"
+            layer_path.write_text(
+                "".join(json.dumps(row) + "\n" for row in forged_rows),
+                encoding="utf-8",
+            )
+            forged_hash = hashlib.sha256(layer_path.read_bytes()).hexdigest()
+            forged_state = json.loads(original_layer_state)
+            forged_state["artifact_sha256"] = forged_hash
+            layer_state_path.write_text(json.dumps(forged_state), encoding="utf-8")
+            forged_index = json.loads(original_probe_index)
+            forged_index["artifacts"]["layer-00"]["sha256"] = forged_hash
+            probe_index_path.write_text(json.dumps(forged_index), encoding="utf-8")
+            forged_status = run_cli(
+                "status",
+                "--project-root",
+                str(root),
+                "--profile",
+                "quick",
+                "--json",
+            )
+            self.assertEqual(forged_status.returncode, 0, forged_status.stderr)
+            forged_steps = json.loads(forged_status.stdout)["steps"]
+            self.assertTrue(forged_steps["smoke"])
+            self.assertFalse(forged_steps["probe"])
+            self.assertFalse(forged_steps["select"])
+            layer_path.write_text(original_layer, encoding="utf-8")
+            layer_state_path.write_text(original_layer_state, encoding="utf-8")
+            probe_index_path.write_text(original_probe_index, encoding="utf-8")
+
             selection_path = root / "runs" / run_id / "selection.json"
             original_selection = selection_path.read_text(encoding="utf-8")
             tampered_selection = json.loads(original_selection)
@@ -585,9 +723,7 @@ class CliTests(unittest.TestCase):
             self.assertFalse(json.loads(tampered_status.stdout)["steps"]["select"])
             selection_path.write_text(original_selection, encoding="utf-8")
 
-            (probe_dir / "layer-00.jsonl").write_text(
-                "corrupted\n", encoding="utf-8"
-            )
+            layer_path.write_text("corrupted\n", encoding="utf-8")
             invalid_status = run_cli(
                 "status",
                 "--project-root",

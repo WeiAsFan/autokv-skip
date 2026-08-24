@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from autokv.commands import CommandResult
 from autokv.config import Profile
@@ -312,6 +313,9 @@ class ExperimentTests(unittest.TestCase):
                 is_complete(artifact.with_suffix(".state.json"), artifact, 1)
             )
             self.assertIn('"exact_match":1.0', artifact.read_text(encoding="utf-8"))
+            self.assertIsNone(
+                json.loads(artifact.read_text(encoding="utf-8"))["ttft_ms"]
+            )
 
             state_path = artifact.with_suffix(".state.json")
             state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -328,6 +332,18 @@ class ExperimentTests(unittest.TestCase):
 
             state_path.unlink()
             row = json.loads(artifact.read_text(encoding="utf-8"))
+            row["ttft_ms"] = 1.0
+            artifact.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "ttft_ms"):
+                experiment.run_variant(
+                    Variant.fp8(),
+                    (case,),
+                    phase="probe",
+                    run_id="run1",
+                    port=8000,
+                )
+
+            row["ttft_ms"] = None
             row["kv_dtype"] = "bfloat16"
             artifact.write_text(json.dumps(row) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "context mismatch"):
@@ -501,6 +517,48 @@ class ExperimentTests(unittest.TestCase):
 
             self.assertEqual(row["quality_mode"], "edit_distance")
             self.assertIsNone(row["answer_nll"])
+
+    def test_start_and_cleanup_failures_preserve_both_causes(self):
+        profile = Profile.from_dict(Profile.default_dict("quick"))
+
+        def runner(argv, timeout=None):
+            if tuple(argv[:2]) == ("docker", "inspect"):
+                return _result(argv, returncode=1, stderr="No such object")
+            if tuple(argv[:2]) == ("docker", "run"):
+                return _result(
+                    argv, returncode=124, stderr="primary docker start timed out"
+                )
+            raise AssertionError(f"unexpected command: {' '.join(argv)}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            experiment = ExperimentRunner(
+                profile,
+                Path(directory),
+                {
+                    "image_ref": "vllm/vllm-openai@sha256:" + "f" * 64,
+                    "image_digest": "sha256:" + "f" * 64,
+                    "model_revision": "a" * 40,
+                },
+                command_runner=runner,
+            )
+            case = NiahCase("dual-1", 1024, 0.5, 42, "DUAL-4821")
+            with patch(
+                "autokv.experiment.safe_cleanup_owned_container",
+                side_effect=RuntimeError("cleanup exploded"),
+            ):
+                with self.assertRaises(RuntimeError) as caught:
+                    experiment.run_variant(
+                        Variant.fp8(),
+                        (case,),
+                        phase="probe",
+                        run_id="dual-failure",
+                        port=8000,
+                    )
+
+            message = str(caught.exception)
+            self.assertIn("returncode=124", message)
+            self.assertIn("primary docker start timed out", message)
+            self.assertIn("cleanup exploded", message)
 
 
 if __name__ == "__main__":

@@ -247,6 +247,8 @@ PagedAttention优化逻辑 token 到物理 block 的分配、碎片和共享；K
 
 三个性能配置由同一 builder 生成，只改变 KV dtype/skip layers；固定镜像 digest、模型 revision、FlashInfer、16G KV、请求分布、并发、seed、warmup 和重复数。每个配置独立启动 server，保存原始 vLLM bench JSON，再聚合 TTFT/TPOT/吞吐；不把启动或首次编译混入稳态。
 
+质量 NIAH 请求是非流式的，所以质量 JSONL 只把完整请求耗时记为 `e2e_ms`，并将 `ttft_ms` 明确记为 `null`。面试中的 TTFT 数字只能引用流式 `vllm bench serve` 产物，不能把质量请求 E2E 改名为 TTFT。
+
 ### Q19：SSH 断了会怎样？
 
 正式运行放在 tmux。控制器把运行源码树 SHA-256 纳入 run ID，在 `run-manifest.json` 保存 run-start Git 身份，并让 `completed-manifest.json` 哈希覆盖全部活跃产物。selection 不是信任保存的层号，而是从 probe hash 重新推导；benchmark 的 matrix state 同时锚定全部场景 raw JSON 与 dmon。重跑只复用上下文、实际 command/server log 和哈希都通过的产物，不一致则拒绝混跑。服务端和 benchmark 客户端都有确定性名称与项目 label；即使遥测停止报错，清理仍在独立 finally 路径中执行。若必须修复损坏配置，`--force` 先把旧证据移到 `_superseded/`，不会删除。

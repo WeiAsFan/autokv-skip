@@ -497,6 +497,11 @@ output_tokens, expected, output_text, exact_match, edit_distance,
 answer_nll, ttft_ms, e2e_ms, timestamp_utc
 ```
 
+probe/final 质量请求采用非流式 completions，因此这些 JSONL 行的
+`ttft_ms` 必须显式写为 `null`，`e2e_ms` 才是该请求的可用延迟值；不得把
+E2E 伪装成 TTFT。TTFT/TPOT/ITL 只从 `vllm bench serve` 的性能原始 JSON
+和逐场景 CSV 报告。
+
 密钥不得写入结果。只记录 `HF_TOKEN` 是否存在，不记录值。
 
 ## 18. 错误处理决策表

@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from autokv.benchmark import (
     BenchmarkRunner,
@@ -408,6 +409,18 @@ class BenchmarkTests(unittest.TestCase):
                 any(call[:2] == ("docker", "stop") for call in calls)
             )
 
+            with patch(
+                "autokv.benchmark.safe_cleanup_owned_container",
+                side_effect=RuntimeError("cleanup exploded"),
+            ):
+                with self.assertRaises(RuntimeError) as caught:
+                    benchmark.run_variant(
+                        Variant.fp8(), run_id="dual-finalization", port=8000
+                    )
+            message = str(caught.exception)
+            self.assertIn("telemetry stop failed", message)
+            self.assertIn("cleanup exploded", message)
+
     def test_detached_start_timeout_cleans_a_created_server_container(self):
         profile = Profile.from_dict(Profile.default_dict("quick"))
         lock = {
@@ -454,6 +467,19 @@ class BenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "docker run failed"):
                 benchmark.run_variant(Variant.fp8(), run_id="start-timeout", port=8000)
             self.assertEqual(containers, {})
+
+            with patch(
+                "autokv.benchmark.safe_cleanup_owned_container",
+                side_effect=RuntimeError("cleanup exploded"),
+            ):
+                with self.assertRaises(RuntimeError) as caught:
+                    benchmark.run_variant(
+                        Variant.fp8(), run_id="dual-start-timeout", port=8000
+                    )
+            message = str(caught.exception)
+            self.assertIn("returncode=124", message)
+            self.assertIn("timed out", message)
+            self.assertIn("cleanup exploded", message)
 
 
 if __name__ == "__main__":

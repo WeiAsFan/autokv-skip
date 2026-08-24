@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -369,6 +370,99 @@ def _completion_text(response: Mapping[str, Any]) -> str:
     return text
 
 
+def validate_experiment_rows(
+    rows: Sequence[Mapping[str, Any]],
+    artifact: Path,
+    variant: Variant,
+    cases: Sequence[NiahCase],
+    *,
+    run_id: str,
+    image_digest: str,
+    model_revision: str,
+    backend: str,
+    quality_mode: str,
+) -> None:
+    """Validate row schema plus every immutable experiment context field."""
+    if quality_mode not in QUALITY_MODES:
+        raise ValueError(f"quality_mode must be one of {sorted(QUALITY_MODES)}")
+    if rows:
+        observed_modes = {row.get("quality_mode") for row in rows}
+        if not observed_modes.issubset({"nll", "edit_distance"}):
+            raise ValueError(f"artifact has missing/invalid quality mode: {artifact}")
+        if len(observed_modes) > 1:
+            raise ValueError(f"artifact mixes quality modes: {artifact}")
+        if quality_mode != "auto" and observed_modes != {quality_mode}:
+            raise ValueError(
+                f"artifact quality mode differs from locked {quality_mode}: {artifact}"
+            )
+
+    case_by_id = {case.sample_id: case for case in cases}
+    expected_context = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "config_id": canonical_config_id(variant),
+        "image_digest": image_digest,
+        "model_revision": model_revision,
+        "backend": backend,
+        "kv_dtype": variant.kv_dtype,
+        "skip_layers": list(variant.skip_layers),
+    }
+    seen: set[str] = set()
+    for row in rows:
+        sample_id = row.get("sample_id")
+        if not isinstance(sample_id, str) or sample_id not in case_by_id:
+            raise ValueError(f"artifact contains unexpected sample ID: {artifact}")
+        if sample_id in seen:
+            raise ValueError(f"partial artifact has duplicate sample IDs: {artifact}")
+        seen.add(sample_id)
+        for key, expected in expected_context.items():
+            if row.get(key) != expected:
+                raise ValueError(f"artifact context mismatch for {key}: {artifact}")
+        case = case_by_id[sample_id]
+        if row.get("seed") != case.seed or row.get("expected") != expected_answer(
+            case.code
+        ):
+            raise ValueError(f"artifact context mismatch for sample: {artifact}")
+        if not isinstance(row.get("output_text"), str):
+            raise ValueError(f"artifact row has invalid output_text: {artifact}")
+        for key in ("prompt_tokens", "edit_distance"):
+            value = row.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"artifact row has invalid {key}: {artifact}")
+        output_tokens = row.get("output_tokens")
+        if output_tokens is not None and (
+            not isinstance(output_tokens, int)
+            or isinstance(output_tokens, bool)
+            or output_tokens < 0
+        ):
+            raise ValueError(f"artifact row has invalid output_tokens: {artifact}")
+        for key in ("needle_depth", "exact_match", "quality_score", "e2e_ms"):
+            value = row.get(key)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(f"artifact row has invalid {key}: {artifact}")
+        if not 0.0 <= float(row["needle_depth"]) <= 1.0:
+            raise ValueError(f"artifact row has invalid needle_depth: {artifact}")
+        if float(row["exact_match"]) not in {0.0, 1.0}:
+            raise ValueError(f"artifact row has invalid exact_match: {artifact}")
+        answer_nll = row.get("answer_nll")
+        if answer_nll is not None and (
+            not isinstance(answer_nll, (int, float))
+            or isinstance(answer_nll, bool)
+            or not math.isfinite(float(answer_nll))
+        ):
+            raise ValueError(f"artifact row has invalid answer_nll: {artifact}")
+        if "ttft_ms" not in row or row["ttft_ms"] is not None:
+            raise ValueError(
+                f"artifact ttft_ms must be explicit null for non-streaming quality: {artifact}"
+            )
+        if not isinstance(row.get("timestamp_utc"), str):
+            raise ValueError(f"artifact row has invalid timestamp_utc: {artifact}")
+
+
 class ExperimentRunner:
     def __init__(
         self,
@@ -429,21 +523,6 @@ class ExperimentRunner:
         result = self.command_runner(("docker", "logs", name), timeout=60)
         return result.stdout + result.stderr
 
-    def _validate_quality_modes(
-        self, rows: Sequence[Mapping[str, Any]], artifact: Path
-    ) -> None:
-        if not rows:
-            return
-        observed = {row.get("quality_mode") for row in rows}
-        if not observed.issubset({"nll", "edit_distance"}):
-            raise ValueError(f"artifact has missing/invalid quality mode: {artifact}")
-        if len(observed) > 1:
-            raise ValueError(f"artifact mixes quality modes: {artifact}")
-        if self.quality_mode != "auto" and observed != {self.quality_mode}:
-            raise ValueError(
-                f"artifact quality mode differs from locked {self.quality_mode}: {artifact}"
-            )
-
     def _validate_existing_rows(
         self,
         rows: Sequence[Mapping[str, Any]],
@@ -452,70 +531,17 @@ class ExperimentRunner:
         cases: Sequence[NiahCase],
         run_id: str,
     ) -> None:
-        self._validate_quality_modes(rows, artifact)
-        case_by_id = {case.sample_id: case for case in cases}
-        expected_context = {
-            "schema_version": 1,
-            "run_id": run_id,
-            "config_id": canonical_config_id(variant),
-            "image_digest": self.lock["image_digest"],
-            "model_revision": self.lock["model_revision"],
-            "backend": self.profile.model.attention_backend,
-            "kv_dtype": variant.kv_dtype,
-            "skip_layers": list(variant.skip_layers),
-        }
-        seen: set[str] = set()
-        for row in rows:
-            sample_id = row.get("sample_id")
-            if not isinstance(sample_id, str) or sample_id not in case_by_id:
-                raise ValueError(f"artifact contains unexpected sample ID: {artifact}")
-            if sample_id in seen:
-                raise ValueError(f"partial artifact has duplicate sample IDs: {artifact}")
-            seen.add(sample_id)
-            for key, expected in expected_context.items():
-                if row.get(key) != expected:
-                    raise ValueError(
-                        f"artifact context mismatch for {key}: {artifact}"
-                    )
-            case = case_by_id[sample_id]
-            if row.get("seed") != case.seed or row.get("expected") != expected_answer(
-                case.code
-            ):
-                raise ValueError(f"artifact context mismatch for sample: {artifact}")
-            if not isinstance(row.get("output_text"), str):
-                raise ValueError(f"artifact row has invalid output_text: {artifact}")
-            for key in ("prompt_tokens", "edit_distance"):
-                value = row.get(key)
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    raise ValueError(f"artifact row has invalid {key}: {artifact}")
-            output_tokens = row.get("output_tokens")
-            if output_tokens is not None and (
-                not isinstance(output_tokens, int)
-                or isinstance(output_tokens, bool)
-                or output_tokens < 0
-            ):
-                raise ValueError(f"artifact row has invalid output_tokens: {artifact}")
-            for key in ("needle_depth", "exact_match", "quality_score", "e2e_ms"):
-                value = row.get(key)
-                if (
-                    not isinstance(value, (int, float))
-                    or isinstance(value, bool)
-                    or not math.isfinite(float(value))
-                ):
-                    raise ValueError(f"artifact row has invalid {key}: {artifact}")
-            if not 0.0 <= float(row["needle_depth"]) <= 1.0:
-                raise ValueError(f"artifact row has invalid needle_depth: {artifact}")
-            if float(row["exact_match"]) not in {0.0, 1.0}:
-                raise ValueError(f"artifact row has invalid exact_match: {artifact}")
-            answer_nll = row.get("answer_nll")
-            if answer_nll is not None and (
-                not isinstance(answer_nll, (int, float))
-                or isinstance(answer_nll, bool)
-                or not math.isfinite(float(answer_nll))
-            ):
-                raise ValueError(f"artifact row has invalid answer_nll: {artifact}")
-            if not isinstance(row.get("timestamp_utc"), str):
-                raise ValueError(f"artifact row has invalid timestamp_utc: {artifact}")
+        validate_experiment_rows(
+            rows,
+            artifact,
+            variant,
+            cases,
+            run_id=run_id,
+            image_digest=str(self.lock["image_digest"]),
+            model_revision=str(self.lock["model_revision"]),
+            backend=self.profile.model.attention_backend,
+            quality_mode=self.quality_mode,
+        )
 
     @staticmethod
     def _is_timeout(exc: BaseException) -> bool:
@@ -634,21 +660,18 @@ class ExperimentRunner:
 
         name = container_name(run_id, variant)
         started = False
+        cleanup_required = False
         completed = False
         captured_log = ""
         try:
             safe_remove_stale_container(name, self.command_runner)
+            cleanup_required = True
             start_result = self.command_runner(argv, timeout=120)
             if not start_result.ok:
-                try:
-                    safe_cleanup_owned_container(name, self.command_runner)
-                except BaseException as cleanup_error:
-                    raise RuntimeError(
-                        f"docker run failed for {variant.name} and the exact owned "
-                        f"container could not be cleaned: {cleanup_error}"
-                    ) from cleanup_error
                 raise RuntimeError(
-                    f"docker run failed for {variant.name}: {start_result.stderr[-1000:]}"
+                    f"docker run failed for {variant.name}: "
+                    f"returncode={start_result.returncode}; "
+                    f"stderr={start_result.stderr[-1000:] or '<empty>'}"
                 )
             started = True
             client = self.client_factory(
@@ -740,18 +763,51 @@ class ExperimentRunner:
                         "answer_nll": answer_nll,
                         "quality_mode": quality_mode,
                         "quality_score": q_score,
+                        "ttft_ms": None,
                         "e2e_ms": elapsed_ms,
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             completed = True
         finally:
+            primary_error = sys.exc_info()[1]
+            finalization_errors: list[tuple[str, BaseException]] = []
             if started:
                 try:
                     captured_log = self._logs(name) or captured_log
                     atomic_write_text(log_path, captured_log)
-                finally:
+                except BaseException as error:
+                    finalization_errors.append(("server-log", error))
+            if cleanup_required:
+                try:
                     safe_cleanup_owned_container(name, self.command_runner)
+                except BaseException as error:
+                    finalization_errors.append(("container-cleanup", error))
+            cleanup_errors = [
+                error
+                for stage, error in finalization_errors
+                if stage == "container-cleanup"
+            ]
+            if primary_error is not None and cleanup_errors:
+                raise RuntimeError(
+                    f"experiment failed: {primary_error}; exact owned server cleanup "
+                    f"also failed: {cleanup_errors[0]}"
+                ) from primary_error
+            if primary_error is None and cleanup_errors:
+                earlier_errors = [
+                    error
+                    for stage, error in finalization_errors
+                    if stage != "container-cleanup"
+                ]
+                if earlier_errors:
+                    raise RuntimeError(
+                        f"experiment finalization failed: {earlier_errors[0]}; "
+                        "exact owned server cleanup also failed: "
+                        f"{cleanup_errors[0]}"
+                    ) from earlier_errors[0]
+                raise cleanup_errors[0]
+            if primary_error is None and finalization_errors:
+                raise finalization_errors[0][1]
 
         if completed:
             mark_complete(

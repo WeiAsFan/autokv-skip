@@ -573,7 +573,9 @@ python3 scripts/verify.py
 - quick：`core_probe_configurations=18`、`probe_samples_per_configuration=6`、`quality_configurations=11`、`quality_samples_per_configuration=18`、`benchmark_scenarios=6`、`executed=false`；
 - full：`core_probe_configurations=34`、`benchmark_scenarios=18`、`executed=false`；
 - manifest 中 quick probe=6、final=18，`dataset_hash` 为 64 位十六进制；
-- server command example 含固定 backend、16G、FP8、skip layers、compatibility env，且不含高权限模式或宿主 CUDA mount。
+- `server_commands` 同时列出 BF16、FP8、Auto-4 占位命令；分别检查 `bfloat16`、`fp8_e4m3`、`--kv-cache-dtype-skip-layers 0 1 2 3`，并确认三者都有固定 backend、16G 与 compatibility env；
+- `benchmark_command_example` 含 `vllm bench serve`，`planned_artifacts` 列出 run manifest、probe/quality/perf index、matrix state 和 report；这些 digest、revision、run ID 与 Auto 层号均明确标为占位值；
+- 所有示例命令都不含高权限模式或宿主 CUDA mount。
 
 ### 失败分支
 
@@ -586,6 +588,8 @@ python3 scripts/verify.py
 ## 阶段 9：10 分钟级双启动 FP8 smoke
 
 smoke 会从干净 engine 独立启动相同 FP8 配置两次，发送同一 1024-token NIAH 请求，并比较输出文本、output token 数、日志解析出的 KV token capacity 和质量评分模式。若两次都能得到可靠 echo logprobs，就把全实验锁为 `nll`；若两次都不能，就把全实验锁为 `edit_distance`。任一不一致都禁止层排序，后续配置绝不混用两种质量函数。
+
+质量请求使用非流式 `/v1/completions`：JSONL 中 `e2e_ms` 是完整请求耗时，`ttft_ms` 必须显式为 `null`，不得把 E2E 冒充 TTFT。真实 TTFT 只由阶段 11 的流式 `vllm bench serve` 原始结果及 `performance-by-scenario.csv` 报告。
 
 ### 命令
 

@@ -28,7 +28,7 @@ from autokv.benchmark import (
     telemetry_is_usable,
 )
 from autokv.client import VllmHttpError
-from autokv.commands import format_command, run_command, server_command
+from autokv.commands import bench_command, format_command, run_command, server_command
 from autokv.config import EXPECTED_DRIVER, Profile, load_profile
 from autokv.doctor import (
     DoctorError,
@@ -41,6 +41,7 @@ from autokv.experiment import (
     canonical_run_id,
     is_complete,
     validate_container_command,
+    validate_experiment_rows,
     validate_server_log,
 )
 from autokv.io import (
@@ -587,13 +588,49 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
     benchmark_scenarios = len(build_benchmark_matrix(profile))
     placeholder_image = "vllm/vllm-openai@sha256:" + "f" * 64
     placeholder_revision = "a" * 40
-    example = server_command(
+    placeholder_run = f"dry-{profile.name}"
+    examples = {
+        "bf16": server_command(
+            profile,
+            placeholder_image,
+            Variant.bf16(),
+            root,
+            8000,
+            placeholder_run,
+            placeholder_revision,
+        ),
+        "fp8": server_command(
+            profile,
+            placeholder_image,
+            Variant.fp8(),
+            root,
+            8000,
+            placeholder_run,
+            placeholder_revision,
+        ),
+        "auto-4-placeholder": server_command(
+            profile,
+            placeholder_image,
+            Variant.mixed("auto-4", (0, 1, 2, 3)),
+            root,
+            8000,
+            placeholder_run,
+            placeholder_revision,
+        ),
+    }
+    first_benchmark = build_benchmark_matrix(profile)[0]
+    benchmark_example = bench_command(
         profile,
         placeholder_image,
-        Variant.mixed("auto-4", (0, 1, 2, 3)),
         root,
         8000,
-        f"dry-{profile.name}",
+        first_benchmark.input_length,
+        first_benchmark.output_length,
+        Path("runs")
+        / "immutable-run-id"
+        / "perf"
+        / "placeholder"
+        / "example.json",
         placeholder_revision,
     )
     return {
@@ -614,7 +651,24 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
         "smoke_engine_starts": 2,
         "estimated_total_engine_starts": 2 + core + quality_configurations + 3,
         "run_steps": list(RUN_STEPS),
-        "server_command_example": format_command(example),
+        "server_command_example": format_command(examples["auto-4-placeholder"]),
+        "server_commands": {
+            name: format_command(argv) for name, argv in examples.items()
+        },
+        "benchmark_command_example": format_command(benchmark_example),
+        "planned_artifacts": [
+            "runs/<immutable-run-id>/run-manifest.json",
+            "runs/<immutable-run-id>/probe/index.json",
+            "runs/<immutable-run-id>/selection.json",
+            "runs/<immutable-run-id>/quality/index.json",
+            "runs/<immutable-run-id>/perf/index.json",
+            "runs/<immutable-run-id>/perf/*.matrix.state.json",
+            "runs/<immutable-run-id>/report/report.zh-CN.md",
+        ],
+        "placeholder_notice": (
+            "digest, revision, run ID, Auto layer IDs, and paths are illustrative; "
+            "real execution uses the immutable lock and probe-derived layers"
+        ),
         "notes": [
             "dry-run never invokes Docker, nvidia-smi, HTTP, or the GPU",
             "A6000 FP8 is a KV storage-compression path, not native FP8 Tensor Core compute",
@@ -660,28 +714,38 @@ def _smoke_path(context: RuntimeContext) -> Path:
     return context.root / "runs" / context.run_id / "smoke" / "smoke.json"
 
 
+def _smoke_case() -> NiahCase:
+    return NiahCase("smoke-1024-50-42", 1024, 0.5, 42, "KV-SMOKE-4242")
+
+
 def _smoke_is_complete(context: RuntimeContext) -> bool:
     path = _smoke_path(context)
     try:
         payload = read_json(path)
         if not isinstance(payload, Mapping) or payload.get("complete") is not True:
             return False
-        for key in ("first", "second"):
+        quality_mode = payload.get("quality_mode")
+        if (
+            payload.get("run_id") != context.run_id
+            or quality_mode not in {"nll", "edit_distance"}
+        ):
+            return False
+        for key, phase in (("first", "smoke-a"), ("second", "smoke-b")):
             artifact = payload.get(key)
             if not isinstance(artifact, Mapping):
                 return False
             if not _experiment_record_is_complete(
                 context.root,
                 artifact,
-                expected_rows=1,
                 expected_variant=Variant.fp8(),
+                expected_run_id=context.run_id,
+                expected_phase=phase,
+                expected_cases=(_smoke_case(),),
+                expected_quality_mode=str(quality_mode),
+                profile=context.profile,
             ):
                 return False
-        return (
-            payload.get("deterministic") is True
-            and payload.get("run_id") == context.run_id
-            and payload.get("quality_mode") in {"nll", "edit_distance"}
-        )
+        return payload.get("deterministic") is True
     except (OSError, TypeError, ValueError):
         return False
 
@@ -706,7 +770,7 @@ def run_smoke(
     _validate_force_target(force_config_id, (Variant.fp8(),))
     if _smoke_is_complete(context) and force_config_id is None:
         return dict(read_json(_smoke_path(context)))
-    case = NiahCase("smoke-1024-50-42", 1024, 0.5, 42, "KV-SMOKE-4242")
+    case = _smoke_case()
     runner = ExperimentRunner(
         context.profile,
         context.root,
@@ -1290,13 +1354,43 @@ def _experiment_record_is_complete(
     root: Path,
     record: Any,
     *,
-    expected_rows: int,
     expected_variant: Variant,
+    expected_run_id: str,
+    expected_phase: str,
+    expected_cases: Sequence[NiahCase],
+    expected_quality_mode: str,
+    profile: Profile,
 ) -> bool:
     if not isinstance(record, Mapping):
         return False
     try:
         artifact = _verified_path(root, record.get("path"), record.get("sha256"))
+        expected_artifact = ensure_within(
+            root,
+            root
+            / "runs"
+            / expected_run_id
+            / expected_phase
+            / (
+                f"{expected_variant.name}-"
+                f"{canonical_config_id(expected_variant)}.jsonl"
+            ),
+        )
+        if artifact != expected_artifact:
+            return False
+        manifest = read_json(
+            root / "runs" / expected_run_id / "run-manifest.json"
+        )
+        if (
+            not isinstance(manifest, Mapping)
+            or manifest.get("run_id") != expected_run_id
+            or manifest.get("profile") != profile.name
+            or manifest.get("model_id") != profile.model.model_id
+            or not isinstance(manifest.get("image_ref"), str)
+            or not isinstance(manifest.get("image_digest"), str)
+            or not isinstance(manifest.get("model_revision"), str)
+        ):
+            return False
         evidence = {
             "server_log": artifact.with_suffix(".server.log"),
             "command_record": artifact.with_suffix(".command.json"),
@@ -1304,7 +1398,7 @@ def _experiment_record_is_complete(
         if not is_complete(
             artifact.with_suffix(".state.json"),
             artifact,
-            expected_rows,
+            len(expected_cases),
             evidence=evidence,
         ):
             return False
@@ -1317,6 +1411,15 @@ def _experiment_record_is_complete(
             "skip_layers": list(expected_variant.skip_layers),
         }:
             return False
+        expected_command_mode = (
+            "auto" if expected_phase in {"smoke-a", "smoke-b"} else expected_quality_mode
+        )
+        if (
+            command.get("image_ref") != manifest["image_ref"]
+            or command.get("model_revision") != manifest["model_revision"]
+            or command.get("quality_mode") != expected_command_mode
+        ):
+            return False
         inspected = command.get("inspected_argv")
         if not isinstance(inspected, list):
             return False
@@ -1324,34 +1427,50 @@ def _experiment_record_is_complete(
         validate_server_log(
             evidence["server_log"].read_text(encoding="utf-8"),
             expected_variant,
+            num_layers=profile.model.num_layers,
+        )
+        rows = read_jsonl(artifact)
+        validate_experiment_rows(
+            rows,
+            artifact,
+            expected_variant,
+            expected_cases,
+            run_id=expected_run_id,
+            image_digest=str(manifest["image_digest"]),
+            model_revision=str(manifest["model_revision"]),
+            backend=profile.model.attention_backend,
+            quality_mode=expected_quality_mode,
         )
         return True
     except (OSError, TypeError, ValueError):
         return False
 
 
-def _smoke_status_is_complete(root: Path, run_id: str) -> bool:
+def _smoke_status_is_complete(root: Path, run_id: str, profile: Profile) -> bool:
     path = root / "runs" / run_id / "smoke" / "smoke.json"
     try:
         payload = read_json(path)
-        return (
-            isinstance(payload, Mapping)
-            and payload.get("complete") is True
-            and payload.get("deterministic") is True
-            and payload.get("run_id") == run_id
-            and payload.get("quality_mode") in {"nll", "edit_distance"}
-            and _experiment_record_is_complete(
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("complete") is not True
+            or payload.get("deterministic") is not True
+            or payload.get("run_id") != run_id
+            or payload.get("quality_mode") not in {"nll", "edit_distance"}
+        ):
+            return False
+        quality_mode = str(payload["quality_mode"])
+        return all(
+            _experiment_record_is_complete(
                 root,
-                payload.get("first"),
-                expected_rows=1,
+                payload.get(key),
                 expected_variant=Variant.fp8(),
+                expected_run_id=run_id,
+                expected_phase=phase,
+                expected_cases=(_smoke_case(),),
+                expected_quality_mode=quality_mode,
+                profile=profile,
             )
-            and _experiment_record_is_complete(
-                root,
-                payload.get("second"),
-                expected_rows=1,
-                expected_variant=Variant.fp8(),
-            )
+            for key, phase in (("first", "smoke-a"), ("second", "smoke-b"))
         )
     except (OSError, TypeError, ValueError):
         return False
@@ -1412,13 +1531,17 @@ def _probe_status_is_complete(
         if set(artifacts) != set(expected_variants):
             return False
         mode = str(payload["quality_mode"])
-        expected_rows = len(make_cases(profile, "probe"))
+        expected_cases = make_cases(profile, "probe")
         for name, record in artifacts.items():
             if not _experiment_record_is_complete(
                 root,
                 record,
-                expected_rows=expected_rows,
                 expected_variant=expected_variants[name],
+                expected_run_id=run_id,
+                expected_phase="probe",
+                expected_cases=expected_cases,
+                expected_quality_mode=mode,
+                profile=profile,
             ):
                 return False
             assert isinstance(record, Mapping)
@@ -1507,12 +1630,17 @@ def _quality_status_is_complete(
         if set(expected_variants) != required:
             return False
         expected_ids: set[str] | None = None
+        expected_cases = make_cases(profile, "final")
         for name, record in artifacts.items():
             if not _experiment_record_is_complete(
                 root,
                 record,
-                expected_rows=len(make_cases(profile, "final")),
                 expected_variant=expected_variants[name],
+                expected_run_id=run_id,
+                expected_phase="quality",
+                expected_cases=expected_cases,
+                expected_quality_mode=str(payload["quality_mode"]),
+                profile=profile,
             ):
                 return False
             assert isinstance(record, Mapping)
@@ -1520,7 +1648,7 @@ def _quality_status_is_complete(
                 root, record.get("path"), record.get("sha256")
             )
             rows = read_jsonl(artifact_path)
-            if len(rows) != len(make_cases(profile, "final")):
+            if len(rows) != len(expected_cases):
                 return False
             _mean_quality(artifact_path, str(payload["quality_mode"]))
             ids = {str(row.get("sample_id")) for row in rows}
@@ -1776,7 +1904,7 @@ def read_status(root: Path, profile_name: str) -> dict[str, Any]:
     }
     if run_id is not None:
         dataset_hash = str(manifest["dataset_hash"])
-        smoke_ready = _smoke_status_is_complete(root, run_id)
+        smoke_ready = _smoke_status_is_complete(root, run_id, profile)
         probe_ready = smoke_ready and _probe_status_is_complete(
             root, run_id, dataset_hash, profile
         )

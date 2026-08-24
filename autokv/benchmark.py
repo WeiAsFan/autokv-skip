@@ -716,24 +716,20 @@ class BenchmarkRunner:
 
         name = container_name(run_id, variant)
         started = False
+        cleanup_required = False
         captured_log = ""
         scenarios: list[dict[str, Any]] = []
         capacity: Capacity | None = None
         telemetry_started = False
         try:
             safe_remove_stale_container(name, self.command_runner)
+            cleanup_required = True
             start_result = self.command_runner(server_argv, timeout=120)
             if not start_result.ok:
-                try:
-                    safe_cleanup_owned_container(name, self.command_runner)
-                except BaseException as cleanup_error:
-                    raise RuntimeError(
-                        f"docker run failed for benchmark {variant.name} and the "
-                        f"exact owned container could not be cleaned: {cleanup_error}"
-                    ) from cleanup_error
                 raise RuntimeError(
                     f"docker run failed for benchmark {variant.name}: "
-                    f"{start_result.stderr[-1000:]}"
+                    f"returncode={start_result.returncode}; "
+                    f"stderr={start_result.stderr[-1000:] or '<empty>'}"
                 )
             started = True
             client = self.client_factory(
@@ -817,6 +813,7 @@ class BenchmarkRunner:
                     atomic_write_text(log_path, captured_log)
                 except BaseException as error:
                     finalization_errors.append(("server-log", error))
+            if cleanup_required:
                 try:
                     safe_cleanup_owned_container(name, self.command_runner)
                 except BaseException as error:
@@ -828,8 +825,8 @@ class BenchmarkRunner:
             ]
             if primary_error is not None and cleanup_errors:
                 raise RuntimeError(
-                    "benchmark failed and exact owned server cleanup also failed: "
-                    f"{cleanup_errors[0]}"
+                    f"benchmark failed: {primary_error}; exact owned server cleanup "
+                    f"also failed: {cleanup_errors[0]}"
                 ) from primary_error
             if primary_error is None and cleanup_errors:
                 earlier_errors = [
@@ -839,8 +836,9 @@ class BenchmarkRunner:
                 ]
                 if earlier_errors:
                     raise RuntimeError(
-                        "benchmark finalization failed and exact owned server "
-                        f"cleanup also failed: {cleanup_errors[0]}"
+                        f"benchmark finalization failed: {earlier_errors[0]}; "
+                        "exact owned server cleanup also failed: "
+                        f"{cleanup_errors[0]}"
                     ) from earlier_errors[0]
                 raise cleanup_errors[0]
             if primary_error is None and finalization_errors:
