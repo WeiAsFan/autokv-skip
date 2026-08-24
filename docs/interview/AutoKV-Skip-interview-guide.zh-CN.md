@@ -57,11 +57,11 @@ score_i        = normalized(delta_recall_i, delta_nll_i)
 
 此处只读真实报告：
 
-- BF16 / FP8 / Auto-4 实测 KV capacity：`<从 capacity.csv 读取>`；
-- 三者 recall/NLL：`<从 quality.csv 读取>`；
+- BF16 / FP8 / Auto-4 实测 KV capacity：`<从 report/summary.csv 读取>`；
+- 三者 recall/NLL：`<从 report/summary.csv 读取>`；
 - Auto-4 层集合：`<从 selection.json 读取>`；
 - Auto-4 相对 Random-4 中位数：`<从 REPORT.zh-CN.md 读取>`；
-- 吞吐、TTFT、TPOT：`<从 performance.csv 读取>`。
+- 吞吐、TTFT、TPOT：`<从 report/performance-by-scenario.csv 读取>`。
 
 最后主动说明：A6000 不具备原生 FP8 Tensor Core，FP8 在这里首先是存储/带宽优化；KVTuner 是直接 prior art，所以我不宣称算法首创。我真正展示的是在硬件和实验预算约束下做出可验证优化的能力。
 

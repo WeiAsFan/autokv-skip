@@ -93,8 +93,12 @@ class DocumentationTests(unittest.TestCase):
             "A6000 不具备原生 FP8 Tensor Core",
             "为什么不用 SGLang",
             "为什么不是 KVTuner",
+            "report/summary.csv",
+            "report/performance-by-scenario.csv",
         ):
             self.assertIn(phrase, text)
+        for nonexistent in ("capacity.csv", "quality.csv", "performance.csv"):
+            self.assertNotIn(f"从 {nonexistent} 读取", text)
 
     def test_readme_distinguishes_local_verification_from_server_validation(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
