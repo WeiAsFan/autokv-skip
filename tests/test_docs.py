@@ -49,6 +49,13 @@ class DocumentationTests(unittest.TestCase):
             "最多尝试 3 次",
             "最多重启 2 次",
             "quality_mode",
+            "--force CONFIG_ID",
+            "_superseded",
+            "nvidia-smi dmon",
+            "run-manifest.json",
+            "completed-manifest.json",
+            "performance-by-scenario.csv",
+            "源码树 SHA-256",
         ):
             self.assertIn(phrase, text)
 

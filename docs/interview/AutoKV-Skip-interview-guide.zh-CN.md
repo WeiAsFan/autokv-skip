@@ -17,7 +17,7 @@
 
 ## 2. 30 秒版本
 
-> 我做了一个叫 AutoKV-Skip 的 vLLM 推理优化小项目。全 BF16 KV Cache 质量稳但容量低，全 FP8 容量接近两倍却可能损失长上下文召回。我用 NIAH 校准集逐层做单层 BF16 恢复消融，通过召回率和答案 NLL 给层排序，自动选 4 层保留 BF16，其余 28 层用 FP8；再对比 BF16、全 FP8、5 组随机层、首层、末层和反向层。Mistral-7B 的理论 KV 容量倍率是 1.7778。整个流程锁定 vLLM 镜像 digest、模型 revision 和数据 hash，并针对不能升级的 R535 驱动做严格 smoke gate。这个工作不是新量化算法，而是一个可复现的精度—容量自动选择与系统验证闭环。
+> 我做了一个叫 AutoKV-Skip 的 vLLM 推理优化小项目。全 BF16 KV Cache 质量稳但容量低，全 FP8 容量接近两倍却可能损失长上下文召回。我用 NIAH 校准集逐层做单层 BF16 恢复消融，通过召回率和答案 NLL 给层排序，自动选 4 层保留 BF16，其余 28 层用 FP8；再对比 BF16、全 FP8、5 组随机层、首层、末层和反向层。Mistral-7B 的理论 KV 容量倍率是 1.7778。整个流程锁定源码树、vLLM 镜像 digest、模型 revision 和数据 hash，并针对不能升级的 R535 驱动做严格 smoke gate。这个工作不是新量化算法，而是一个可复现的精度—容量自动选择与系统验证闭环。
 
 讲完停下，等面试官选择追问算法、系统或实验。
 
@@ -140,7 +140,7 @@ doctor.json
 - probe：BF16、FP8、候选单层恢复；
 - quality：BF16、FP8、Auto-4、Random-4×5、First-4、Last-4、Inverted-4；
 - performance：BF16、FP8、Auto-4；
-- quick：6 次 benchmark 重复；full：18 次；先 warmup。
+- quick：6 个固定长度场景、每场景 1 次；full：6 个场景、每场景 3 次，共 18 个原始结果；先 warmup。
 
 ### 4.5 第 10–12 分钟：框架与硬件决策
 
@@ -249,7 +249,9 @@ PagedAttention优化逻辑 token 到物理 block 的分配、碎片和共享；K
 
 ### Q19：SSH 断了会怎样？
 
-正式运行放在 tmux。控制器每阶段写入包含上游 hash 的状态，重跑同一 `run` 时只复用校验通过的产物；不一致则拒绝混跑。服务容器带项目/run/config label，清理只针对精确 label。
+正式运行放在 tmux。控制器把源码树 SHA-256 纳入 run ID，在 `run-manifest.json` 记录 Git 身份，并让 `completed-manifest.json` 哈希覆盖全部活跃产物。每阶段写入包含上游 hash 的状态，重跑同一 `run` 时只复用上下文、行模式和哈希都通过的产物；不一致则拒绝混跑。服务端和 benchmark 客户端都有确定性名称与项目 label，超时清理只针对精确容器。若必须修复损坏配置，`--force` 先把旧证据移到 `_superseded/`，不会删除。
+
+我还验证了“运行的确实是想要的配置”：启动后读取 Docker 实际 `.Config.Cmd`；Auto-4 要在 DEBUG 日志中给出全部 32 层的有效 KV dtype，恰好 4 层是 `auto`、其余是 `fp8_e4m3`。性能不混合不同长度下结论，而是在相同 input/output 场景内比较，并同步保存只读 `nvidia-smi dmon` 功耗、利用率、时钟和显存轨迹。
 
 ### Q20：R535 和新 CUDA 镜像真的兼容吗？
 
@@ -278,11 +280,11 @@ PagedAttention优化逻辑 token 到物理 block 的分配、碎片和共享；K
 面试现场按以下顺序打开，不需要从 1000 行 CLI 顶部逐行读：
 
 1. `configs/quick.json`：展示冻结假设、预算和实验规模；
-2. `autokv/profile.py`：展示 schema/默认配置与 hash；
+2. `autokv/config.py`：展示 profile 全字段冻结与校验；
 3. `autokv/commands.py`：展示唯一 command builder 如何只改变 KV 配置；
 4. `autokv/selection.py`：展示分数、tie-break、Auto/Random/First/Last/Inverted；
-5. `autokv/experiment.py`：展示 server isolation、HTTP 请求和断点恢复；
-6. `autokv/benchmark.py`：展示 warmup、原始 JSON、聚合和容量解析；
+5. `autokv/experiment.py`：展示实际 argv/逐层 dtype gate、server isolation、HTTP 请求和严格断点恢复；
+6. `autokv/benchmark.py`：展示命名客户端、逐场景聚合、dmon 遥测和理论—实测容量证据；
 7. `autokv/doctor.py`：展示不可升级驱动的 fail-closed gate；
 8. `autokv/report.py`：展示 theory vs measured 与负结果判据；
 9. `tests/`：展示无 GPU 的 fake Docker/HTTP 测试如何覆盖控制面；
@@ -340,6 +342,7 @@ recovery = (Q_auto - Q_fp8) / (Q_bf16 - Q_fp8)
 
 - 只展示 `REPORT.zh-CN.md` 中存在的真实数字；
 - 能指出镜像 digest、模型 revision、dataset hash 和 run ID；
+- 能指出源码树 SHA-256、`run-manifest.json` 和 `completed-manifest.json`；
 - 能口算 131072、65536、73728 bytes/token 与 1.7778；
 - 能用一句话说明 A6000 的 FP8 硬件边界；
 - 能承认 KVTuner prior art；
@@ -348,3 +351,4 @@ recovery = (Q_auto - Q_fp8) / (Q_bf16 - Q_fp8)
 - 不把运行控制器说成 CUDA kernel 开发；
 - 不把 NIAH 泛化为通用模型质量；
 - 不说“驱动版本看起来兼容”，而说“doctor 和 smoke 在锁定环境中实测通过/未通过”。
+- 不拿不同 input/output 长度的算术均值比较延迟；展示 `performance-by-scenario.csv` 和对应 dmon 日志。

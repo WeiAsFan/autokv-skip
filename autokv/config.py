@@ -169,6 +169,12 @@ class Profile:
         name = str(root.get("name", ""))
         if name not in {"quick", "full"}:
             raise ValueError("profile name must be quick or full")
+        approved = cls.default_dict(name)
+        if root != approved:
+            raise ValueError(
+                f"profile must match the approved {name} profile exactly; "
+                "do not tune parameters between configurations"
+            )
 
         hardware = Hardware(
             driver=driver,

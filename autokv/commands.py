@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -18,6 +19,7 @@ from autokv.selection import Variant, canonical_config_id
 
 PROJECT_LABEL = "io.autokv.project=autokv-skip"
 COMPATIBILITY_ENV = "VLLM_ENABLE_CUDA_COMPATIBILITY=1"
+VLLM_DEBUG_ENV = "VLLM_LOGGING_LEVEL=DEBUG"
 HF_CACHE_IN_CONTAINER = "/root/.cache/huggingface"
 
 
@@ -177,6 +179,8 @@ def server_command(
         "-e",
         COMPATIBILITY_ENV,
         "-e",
+        VLLM_DEBUG_ENV,
+        "-e",
         f"HF_HOME={HF_CACHE_IN_CONTAINER}",
         "-e",
         "HF_TOKEN",
@@ -224,6 +228,15 @@ def _container_result_path(project_root: Path, relative_path: Path) -> str:
     return "/workspace/autokv-skip/" + relative_path.as_posix()
 
 
+def benchmark_container_name(result_relative_path: Path) -> str:
+    if result_relative_path.is_absolute() or ".." in result_relative_path.parts:
+        raise ValueError("benchmark result path must be project-relative")
+    digest = hashlib.sha256(
+        result_relative_path.as_posix().encode("utf-8")
+    ).hexdigest()[:12]
+    return f"autokv-bench-{digest}"
+
+
 def bench_command(
     profile: Profile,
     image_ref: str,
@@ -249,6 +262,8 @@ def bench_command(
         "docker",
         "run",
         "--rm",
+        "--name",
+        benchmark_container_name(result_relative_path),
         "--network",
         "host",
         "--gpus",

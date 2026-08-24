@@ -5,16 +5,18 @@ from __future__ import annotations
 import itertools
 import re
 import statistics
+import subprocess
 from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from autokv.client import VllmClient, wait_until_ready
 from autokv.commands import (
     CommandResult,
     bench_command,
+    benchmark_container_name,
     container_name,
     run_command,
     server_command,
@@ -22,6 +24,9 @@ from autokv.commands import (
 from autokv.config import Profile
 from autokv.experiment import (
     MAX_TIMEOUT_RESTARTS,
+    archive_exact_artifacts,
+    inspect_container_command,
+    safe_cleanup_owned_container,
     safe_remove_stale_container,
     safe_stop_container,
     validate_server_log,
@@ -40,6 +45,17 @@ Runner = Callable[..., CommandResult]
 ClientFactory = Callable[[str, str], Any]
 
 
+class Telemetry(Protocol):
+    command: tuple[str, ...]
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+TelemetryFactory = Callable[[Path], Telemetry]
+
+
 @dataclass(frozen=True)
 class Capacity:
     tokens: int
@@ -52,6 +68,62 @@ class BenchmarkCase:
     input_length: int
     output_length: int
     repeat: int
+
+
+class NvidiaDmonSampler:
+    """Capture read-only GPU telemetry while the benchmark matrix is running."""
+
+    command = ("nvidia-smi", "dmon", "-s", "pucm", "-d", "1", "-o", "DT")
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._process: subprocess.Popen[str] | None = None
+        self._stream: Any = None
+
+    def start(self) -> None:
+        if self._process is not None:
+            raise RuntimeError("nvidia-smi dmon telemetry is already running")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = self.path.open("w", encoding="utf-8", newline="\n")
+        try:
+            self._process = subprocess.Popen(
+                self.command,
+                stdout=self._stream,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+        except BaseException:
+            self._stream.close()
+            self._stream = None
+            raise
+
+    def stop(self) -> None:
+        process = self._process
+        stream = self._stream
+        self._process = None
+        self._stream = None
+        early_returncode: int | None = None
+        try:
+            if process is not None:
+                if process.poll() is not None:
+                    early_returncode = process.returncode
+                else:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+        finally:
+            if stream is not None:
+                stream.flush()
+                stream.close()
+        if early_returncode is not None:
+            raise RuntimeError(
+                "nvidia-smi dmon exited before benchmark completion "
+                f"with code {early_returncode}; inspect {self.path}"
+            )
 
 
 def parse_capacity_tokens(log: str) -> Capacity:
@@ -120,6 +192,104 @@ def extract_performance_metrics(payload: Mapping[str, Any]) -> dict[str, float]:
     return metrics
 
 
+def aggregate_scenario_groups(
+    scenarios: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, int], list[Mapping[str, Any]]] = {}
+    for scenario in scenarios:
+        key = (int(scenario["input_length"]), int(scenario["output_length"]))
+        metrics = scenario.get("metrics")
+        if not isinstance(metrics, Mapping):
+            raise ValueError("benchmark scenario is missing metrics")
+        grouped.setdefault(key, []).append(metrics)
+    result: list[dict[str, Any]] = []
+    for (input_length, output_length), repetitions in sorted(grouped.items()):
+        values_by_metric: dict[str, list[float]] = {}
+        for metrics in repetitions:
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values_by_metric.setdefault(str(key), []).append(float(value))
+        result.append(
+            {
+                "input_length": input_length,
+                "output_length": output_length,
+                "repeats": len(repetitions),
+                "metrics": {
+                    key: statistics.fmean(values)
+                    for key, values in sorted(values_by_metric.items())
+                },
+            }
+        )
+    return result
+
+
+def _kv_budget_bytes(value: str) -> int:
+    match = re.fullmatch(r"([1-9][0-9]*)([KMG])", value)
+    if match is None:
+        raise ValueError(f"unsupported KV cache memory budget: {value}")
+    powers = {"K": 1, "M": 2, "G": 3}
+    return int(match.group(1)) * 1024 ** powers[match.group(2)]
+
+
+def _bytes_per_token(profile: Profile, variant: Variant) -> int:
+    dtype_bytes_by_layer = (
+        profile.model.num_layers * 2
+        if variant.kv_dtype == "auto"
+        else profile.model.num_layers + len(variant.skip_layers)
+    )
+    return (
+        2
+        * profile.model.num_kv_heads
+        * profile.model.head_dim
+        * dtype_bytes_by_layer
+    )
+
+
+def capacity_validation(
+    profile: Profile, variant: Variant, capacity: Capacity, server_log: str
+) -> dict[str, Any]:
+    budget_bytes = _kv_budget_bytes(profile.kv_cache_memory)
+    bytes_per_token = _bytes_per_token(profile, variant)
+    theoretical_tokens = budget_bytes // bytes_per_token
+    relative_deviation = abs(capacity.tokens - theoretical_tokens) / theoretical_tokens
+    evidence = [
+        line.strip()
+        for line in server_log.splitlines()
+        if re.search(
+            r"(?:GPU KV cache|cache memory|kv_cache_memory|\bblocks?\b|\bpages?\b)",
+            line,
+            flags=re.IGNORECASE,
+        )
+    ]
+    page_or_block = [
+        line
+        for line in evidence
+        if re.search(r"\b(?:blocks?|pages?)\b", line, flags=re.IGNORECASE)
+    ]
+    within_tolerance = relative_deviation <= 0.10
+    return {
+        "kv_budget_bytes": budget_bytes,
+        "bytes_per_token": bytes_per_token,
+        "theoretical_tokens": theoretical_tokens,
+        "measured_tokens": capacity.tokens,
+        "relative_deviation": relative_deviation,
+        "within_10_percent": within_tolerance,
+        "runtime_evidence": evidence,
+        "page_or_block_evidence": page_or_block,
+        "evidence_complete": within_tolerance or bool(page_or_block),
+    }
+
+
+def telemetry_is_usable(path: Path) -> bool:
+    try:
+        return any(
+            re.match(r"^\d{8}\s+\d{2}:\d{2}:\d{2}\s+", line.strip())
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        )
+    except OSError:
+        return False
+
+
 class BenchmarkRunner:
     """Run the fixed benchmark matrix for one isolated server configuration."""
 
@@ -131,6 +301,8 @@ class BenchmarkRunner:
         *,
         command_runner: Runner = run_command,
         client_factory: ClientFactory | None = None,
+        telemetry_factory: TelemetryFactory | None = None,
+        force_config_id: str | None = None,
     ) -> None:
         self.profile = profile
         self.project_root = project_root.resolve()
@@ -139,9 +311,20 @@ class BenchmarkRunner:
         self.client_factory = client_factory or (
             lambda base_url, model_id: VllmClient(base_url, model_id)
         )
+        self.telemetry_factory = telemetry_factory or NvidiaDmonSampler
+        if force_config_id is not None and not re.fullmatch(
+            r"[0-9a-f]{12}", force_config_id
+        ):
+            raise ValueError("force config ID must be 12 lowercase hex characters")
+        self.force_config_id = force_config_id
+        self._forced_keys: set[tuple[str, str]] = set()
         for key in ("image_ref", "image_digest", "model_revision"):
             if not isinstance(lock.get(key), str) or not lock[key]:
                 raise ValueError(f"environment lock is missing {key}")
+
+    @property
+    def force_applied(self) -> bool:
+        return bool(self._forced_keys)
 
     def _paths(
         self, run_id: str, variant: Variant
@@ -160,14 +343,28 @@ class BenchmarkRunner:
             directory,
         )
 
-    def _is_complete(self, summary_path: Path, expected_scenarios: int) -> bool:
+    def _is_complete(
+        self, summary_path: Path, expected_scenarios: int, variant: Variant
+    ) -> bool:
         try:
             summary = read_json(summary_path)
-            if not isinstance(summary, Mapping) or summary.get("complete") is not True:
+            if (
+                not isinstance(summary, Mapping)
+                or summary.get("schema_version") != 2
+                or summary.get("complete") is not True
+            ):
+                return False
+            expected_variant = {
+                "name": variant.name,
+                "kv_dtype": variant.kv_dtype,
+                "skip_layers": list(variant.skip_layers),
+            }
+            if summary.get("variant") != expected_variant:
                 return False
             scenarios = summary.get("scenarios")
             if not isinstance(scenarios, list) or len(scenarios) != expected_scenarios:
                 return False
+            expected_cases = [asdict(case) for case in build_benchmark_matrix(self.profile)]
             for scenario in scenarios:
                 if not isinstance(scenario, Mapping):
                     return False
@@ -178,8 +375,63 @@ class BenchmarkRunner:
                 raw_path = ensure_within(self.project_root, self.project_root / relative)
                 if not raw_path.is_file() or sha256_file(raw_path) != expected_hash:
                     return False
+                payload = read_json(raw_path)
+                if not isinstance(payload, Mapping):
+                    return False
+                if scenario.get("metrics") != extract_performance_metrics(payload):
+                    return False
+            actual_cases = [
+                {
+                    "input_length": scenario.get("input_length"),
+                    "output_length": scenario.get("output_length"),
+                    "repeat": scenario.get("repeat"),
+                }
+                for scenario in scenarios
+            ]
+            if actual_cases != expected_cases:
+                return False
+            if summary.get("scenario_groups") != aggregate_scenario_groups(scenarios):
+                return False
+            for artifact_key in ("telemetry", "server_log", "command_record"):
+                record = summary.get(artifact_key)
+                if not isinstance(record, Mapping):
+                    return False
+                path = ensure_within(
+                    self.project_root, self.project_root / str(record.get("path", ""))
+                )
+                if not path.is_file() or sha256_file(path) != record.get("sha256"):
+                    return False
+                if artifact_key == "telemetry" and not telemetry_is_usable(path):
+                    return False
+            capacity_raw = summary.get("capacity")
+            if not isinstance(capacity_raw, Mapping):
+                return False
+            observed_capacity = Capacity(
+                tokens=int(capacity_raw["tokens"]),
+                model_length=(
+                    None
+                    if capacity_raw.get("model_length") is None
+                    else int(capacity_raw["model_length"])
+                ),
+                max_concurrency=(
+                    None
+                    if capacity_raw.get("max_concurrency") is None
+                    else float(capacity_raw["max_concurrency"])
+                ),
+            )
+            server_record = summary["server_log"]
+            server_path = ensure_within(
+                self.project_root, self.project_root / str(server_record["path"])
+            )
+            server_log = server_path.read_text(encoding="utf-8")
+            if parse_capacity_tokens(server_log) != observed_capacity:
+                return False
+            if summary.get("capacity_validation") != capacity_validation(
+                self.profile, variant, observed_capacity, server_log
+            ):
+                return False
             return True
-        except (OSError, TypeError, ValueError):
+        except (KeyError, OSError, TypeError, ValueError):
             return False
 
     def _logs(self, name: str) -> str:
@@ -198,8 +450,33 @@ class BenchmarkRunner:
         summary_path, log_path, command_path, result_directory = self._paths(
             run_id, variant
         )
-        if self._is_complete(summary_path, len(matrix)):
+        telemetry_path = summary_path.with_name(
+            summary_path.name.removesuffix(".summary.json") + ".dmon.log"
+        )
+        config_id = canonical_config_id(variant)
+        force_key = (run_id, config_id)
+        if self.force_config_id == config_id and force_key not in self._forced_keys:
+            archive_exact_artifacts(
+                self.project_root,
+                run_id,
+                "perf",
+                config_id,
+                (
+                    summary_path,
+                    log_path,
+                    command_path,
+                    telemetry_path,
+                    result_directory,
+                ),
+            )
+            self._forced_keys.add(force_key)
+        if self._is_complete(summary_path, len(matrix), variant):
             return summary_path
+        if summary_path.exists():
+            raise ValueError(
+                f"benchmark summary integrity mismatch; preserve evidence and use "
+                f"--force {config_id}: {summary_path}"
+            )
         result_directory.mkdir(parents=True, exist_ok=True)
 
         image_ref = str(self.lock["image_ref"])
@@ -232,26 +509,42 @@ class BenchmarkRunner:
                     )
                 )
             )
-        atomic_write_json(
-            command_path,
-            {
-                "server_argv": list(server_argv),
-                "benchmark_argv": bench_commands,
-                "image_ref": image_ref,
-                "model_revision": model_revision,
-                "variant": {
-                    "name": variant.name,
-                    "kv_dtype": variant.kv_dtype,
-                    "skip_layers": list(variant.skip_layers),
-                },
+        telemetry = self.telemetry_factory(telemetry_path)
+        cached_matrix_complete = telemetry_is_usable(telemetry_path)
+        if cached_matrix_complete:
+            for case in matrix:
+                raw_path = result_directory / (
+                    f"in{case.input_length}-out{case.output_length}-rep{case.repeat}.json"
+                )
+                try:
+                    cached_payload = read_json(raw_path)
+                    if not isinstance(cached_payload, Mapping):
+                        cached_matrix_complete = False
+                        break
+                    extract_performance_metrics(cached_payload)
+                except (OSError, TypeError, ValueError):
+                    cached_matrix_complete = False
+                    break
+        command_record = {
+            "server_argv": list(server_argv),
+            "benchmark_argv": bench_commands,
+            "image_ref": image_ref,
+            "model_revision": model_revision,
+            "variant": {
+                "name": variant.name,
+                "kv_dtype": variant.kv_dtype,
+                "skip_layers": list(variant.skip_layers),
             },
-        )
+            "telemetry_argv": list(telemetry.command),
+        }
+        atomic_write_json(command_path, command_record)
 
         name = container_name(run_id, variant)
         started = False
         captured_log = ""
         scenarios: list[dict[str, Any]] = []
         capacity: Capacity | None = None
+        telemetry_started = False
         try:
             safe_remove_stale_container(name, self.command_runner)
             start_result = self.command_runner(server_argv, timeout=120)
@@ -265,17 +558,26 @@ class BenchmarkRunner:
                 f"http://127.0.0.1:{port}", self.profile.model.model_id
             )
             wait_until_ready(client, timeout_seconds=900, interval_seconds=2)
+            command_record["inspected_server_argv"] = list(
+                inspect_container_command(name, variant, self.command_runner)
+            )
+            atomic_write_json(command_path, command_record)
             client.complete("Reply with OK.", 1)
             captured_log = self._logs(name)
-            validate_server_log(captured_log, variant)
+            validate_server_log(
+                captured_log, variant, num_layers=self.profile.model.num_layers
+            )
             capacity = parse_capacity_tokens(captured_log)
+            if not cached_matrix_complete:
+                telemetry.start()
+                telemetry_started = True
 
             for case, argv in zip(matrix, bench_commands):
                 raw_path = result_directory / (
                     f"in{case.input_length}-out{case.output_length}-rep{case.repeat}.json"
                 )
-                reusable = False
-                if raw_path.is_file():
+                reusable = cached_matrix_complete
+                if reusable and raw_path.is_file():
                     try:
                         cached_payload = read_json(raw_path)
                         reusable = isinstance(cached_payload, Mapping)
@@ -284,10 +586,18 @@ class BenchmarkRunner:
                     except (OSError, TypeError, ValueError):
                         reusable = False
                 if not reusable:
+                    bench_name = benchmark_container_name(
+                        raw_path.relative_to(self.project_root)
+                    )
+                    safe_remove_stale_container(bench_name, self.command_runner)
                     for attempt in range(MAX_TIMEOUT_RESTARTS + 1):
                         result = self.command_runner(tuple(argv), timeout=3600)
                         if result.ok:
                             break
+                        if result.returncode == 124:
+                            safe_cleanup_owned_container(
+                                bench_name, self.command_runner
+                            )
                         if (
                             result.returncode != 124
                             or attempt >= MAX_TIMEOUT_RESTARTS
@@ -312,6 +622,8 @@ class BenchmarkRunner:
                     }
                 )
         finally:
+            if telemetry_started:
+                telemetry.stop()
             if started:
                 try:
                     captured_log = self._logs(name) or captured_log
@@ -321,6 +633,8 @@ class BenchmarkRunner:
 
         if capacity is None:
             raise ValueError("benchmark server did not expose KV capacity")
+        if not telemetry_is_usable(telemetry_path):
+            raise ValueError("nvidia-smi dmon telemetry was not captured")
         values_by_metric: dict[str, list[float]] = {}
         for scenario in scenarios:
             for key, value in scenario["metrics"].items():
@@ -329,10 +643,14 @@ class BenchmarkRunner:
             key: statistics.fmean(values)
             for key, values in sorted(values_by_metric.items())
         }
+        scenario_groups = aggregate_scenario_groups(scenarios)
+        validation = capacity_validation(
+            self.profile, variant, capacity, captured_log
+        )
         atomic_write_json(
             summary_path,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "complete": True,
                 "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                 "run_id": run_id,
@@ -345,6 +663,25 @@ class BenchmarkRunner:
                 "model_revision": model_revision,
                 "capacity": asdict(capacity),
                 "aggregate": aggregate,
+                "aggregate_semantics": (
+                    "unweighted descriptive mean across heterogeneous workloads; "
+                    "do not use for latency comparison"
+                ),
+                "scenario_groups": scenario_groups,
+                "capacity_validation": validation,
+                "telemetry": {
+                    "path": telemetry_path.relative_to(self.project_root).as_posix(),
+                    "sha256": sha256_file(telemetry_path),
+                    "argv": list(telemetry.command),
+                },
+                "server_log": {
+                    "path": log_path.relative_to(self.project_root).as_posix(),
+                    "sha256": sha256_file(log_path),
+                },
+                "command_record": {
+                    "path": command_path.relative_to(self.project_root).as_posix(),
+                    "sha256": sha256_file(command_path),
+                },
                 "scenarios": scenarios,
             },
         )

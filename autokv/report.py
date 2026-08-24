@@ -186,7 +186,9 @@ def _summary_csv(
     for name in sorted(aggregates, key=_config_order):
         aggregate = aggregates[name]
         capacity = capacities.get(name)
-        perf = performance.get(name, {})
+        raw_perf = performance.get(name, {})
+        descriptive = raw_perf.get("overall_descriptive_mean", raw_perf)
+        perf = descriptive if isinstance(descriptive, Mapping) else {}
         row = {
             "config": name,
             "samples": aggregate.samples,
@@ -202,6 +204,40 @@ def _summary_csv(
         }
         row.update({field: perf.get(field, "") for field in PERFORMANCE_CSV_FIELDS})
         writer.writerow(row)
+    return stream.getvalue()
+
+
+def _performance_scenario_csv(
+    performance: Mapping[str, Mapping[str, Any]],
+) -> str:
+    stream = io.StringIO(newline="")
+    fields = (
+        "configuration",
+        "input_length",
+        "output_length",
+        "repeats",
+        *PERFORMANCE_CSV_FIELDS,
+    )
+    writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+    writer.writeheader()
+    for name in ("bf16", "fp8", "auto-4"):
+        groups = performance.get(name, {}).get("scenario_groups", [])
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, Mapping):
+                continue
+            metrics = group.get("metrics", {})
+            if not isinstance(metrics, Mapping):
+                metrics = {}
+            row = {
+                "configuration": name,
+                "input_length": group.get("input_length", ""),
+                "output_length": group.get("output_length", ""),
+                "repeats": group.get("repeats", ""),
+            }
+            row.update({field: metrics.get(field, "") for field in PERFORMANCE_CSV_FIELDS})
+            writer.writerow(row)
     return stream.getvalue()
 
 
@@ -222,10 +258,32 @@ def render_report(
     performance: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Path]:
     required = {"bf16", "fp8", "auto-4"}
-    if not required.issubset(quality):
-        raise ValueError("report requires bf16, fp8 and auto-4 quality rows")
+    required_quality = {
+        *required,
+        *(f"random-4-{index}" for index in range(1, len(profile.selection.random_seeds) + 1)),
+        "first-4",
+        "last-4",
+        "inverted-4",
+    }
+    if set(quality) != required_quality:
+        missing = sorted(required_quality - set(quality))
+        unexpected = sorted(set(quality) - required_quality)
+        raise ValueError(
+            "report requires exactly all pre-registered quality configurations; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
     if not required.issubset(capacities):
         raise ValueError("report requires bf16, fp8 and auto-4 capacities")
+    expected_sample_ids: set[str] | None = None
+    for name, rows in quality.items():
+        sample_ids = [str(row["sample_id"]) for row in rows]
+        if len(sample_ids) != len(set(sample_ids)):
+            raise ValueError(f"quality configuration contains duplicate sample IDs: {name}")
+        observed = set(sample_ids)
+        if expected_sample_ids is None:
+            expected_sample_ids = observed
+        elif observed != expected_sample_ids:
+            raise ValueError("quality configurations do not contain the same sample IDs")
     output_dir.mkdir(parents=True, exist_ok=True)
     aggregates = {name: aggregate_quality(rows) for name, rows in quality.items()}
     bf16_q = aggregates["bf16"].quality_score
@@ -251,12 +309,8 @@ def render_report(
         for name, aggregate in aggregates.items()
         if name.startswith("random-4")
     ]
-    random_median = statistics.median(random_scores) if random_scores else None
-    inverted_q = (
-        aggregates["inverted-4"].quality_score
-        if "inverted-4" in aggregates
-        else None
-    )
+    random_median = statistics.median(random_scores)
+    inverted_q = aggregates["inverted-4"].quality_score
 
     auto_layers = [int(layer) for layer in selection.get("auto_layers", [])]
     image_ref = str(lock.get("image_ref", "missing"))
@@ -264,6 +318,11 @@ def render_report(
     host = lock.get("host", {}) if isinstance(lock.get("host"), Mapping) else {}
     versions = (
         lock.get("versions", {}) if isinstance(lock.get("versions"), Mapping) else {}
+    )
+    source = (
+        selection.get("source", {})
+        if isinstance(selection.get("source"), Mapping)
+        else {}
     )
 
     lines = [
@@ -295,6 +354,8 @@ def render_report(
             f"- 镜像：`{image_ref}`",
             f"- 模型 revision：`{model_revision}`",
             f"- vLLM：{versions.get('vllm', 'missing')}；容器 CUDA：{versions.get('cuda', 'missing')}",
+            f"- 源码树 SHA-256：`{source.get('tree_sha256', 'missing')}`",
+            f"- Git commit：`{source.get('git_commit', 'not-available')}`；dirty：{source.get('git_dirty', 'not-available')}",
             "- 注意力后端：FLASHINFER；KV 预算：16G；随机 token scales：启用。",
             f"- 全实验质量评分模式：{selection.get('quality_mode', 'missing')}。",
             "",
@@ -303,6 +364,29 @@ def render_report(
             f"- BF16：{kv_bytes_per_token(32, 8, 128, 2):,} bytes/token。",
             f"- FP8：{kv_bytes_per_token(32, 8, 128, 1):,} bytes/token。",
             f"- Auto-4：{mixed_kv_bytes_per_token(32, 4, 8, 128):,} bytes/token。",
+            "",
+            "## 分组与逐层敏感性",
+            "",
+            "分数均为相对全 FP8 的 Q 增量；`✓` 表示最终 Auto-4 选中层。",
+            "",
+            "| 类型 | 候选 | ΔQ | 选中 |",
+            "|---|---|---:|---|",
+        )
+    )
+    group_scores = selection.get("group_scores", {})
+    if isinstance(group_scores, Mapping):
+        for name, score in sorted(group_scores.items()):
+            lines.append(f"| 分组 | {name} | {float(score):.6f} | |")
+    layer_scores = selection.get("layer_scores", {})
+    if isinstance(layer_scores, Mapping):
+        for layer, score in sorted(
+            ((int(layer), float(score)) for layer, score in layer_scores.items())
+        ):
+            lines.append(
+                f"| 单层 | {layer} | {score:.6f} | {'✓' if layer in auto_layers else ''} |"
+            )
+    lines.extend(
+        (
             "",
             "## 质量结果",
             "",
@@ -337,57 +421,69 @@ def render_report(
     lines.extend(
         (
             "",
+            "### 理论容量与运行时证据",
+            "",
+            "16 GiB 预算按 KV 元素字节数计算理论 token 数；偏差超过 10% 时，必须保留 page/block 日志证据，否则证据门禁不通过。",
+            "",
+            "| 配置 | 理论 tokens | 实测 tokens | 相对偏差 | ≤10% | page/block 证据 |",
+            "|---|---:|---:|---:|---|---|",
+        )
+    )
+    capacity_evidence_complete = True
+    for name in ("bf16", "fp8", "auto-4"):
+        raw_validation = performance.get(name, {}).get("capacity_validation", {})
+        validation = raw_validation if isinstance(raw_validation, Mapping) else {}
+        evidence = validation.get("page_or_block_evidence", [])
+        evidence_count = len(evidence) if isinstance(evidence, list) else 0
+        evidence_complete = validation.get("evidence_complete") is True
+        capacity_evidence_complete = capacity_evidence_complete and evidence_complete
+        deviation = validation.get("relative_deviation")
+        deviation_text = (
+            f"{float(deviation) * 100:.2f}%"
+            if isinstance(deviation, (int, float)) and not isinstance(deviation, bool)
+            else "N/A"
+        )
+        lines.append(
+            f"| {name} | {validation.get('theoretical_tokens', 'N/A')} | "
+            f"{validation.get('measured_tokens', 'N/A')} | {deviation_text} | "
+            f"{'是' if validation.get('within_10_percent') is True else '否'} | "
+            f"{evidence_count} 行（{'充分' if evidence_complete else '不足'}） |"
+        )
+    lines.extend(
+        (
+            "",
             "## 服务性能",
             "",
-            "以下值是固定输入/输出长度矩阵与重复运行的算术聚合；逐场景原始 JSON 保存在 `perf/`，不要把不同长度的聚合当成单一请求的延迟。",
+            "跨长度只保留描述性均值；正式比较一律在相同 input/output 场景内进行。逐场景原始 JSON 与 `nvidia-smi dmon` 日志保存在 `perf/`。",
             "",
-            "### 吞吐",
+            "### 逐场景性能",
             "",
-            "| 配置 | Request throughput (req/s) | Output throughput (tok/s) | Total token throughput (tok/s) |",
-            "|---|---:|---:|---:|",
+            "| 配置 | Input | Output | 重复 | Req/s | Output tok/s | Median TTFT | P99 TTFT | Median TPOT | P99 TPOT | Median ITL | P99 ITL |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         )
     )
     for name in ("bf16", "fp8", "auto-4"):
-        metrics = performance.get(name, {})
-        lines.append(
-            f"| {name} | {_format_metric(metrics, 'request_throughput')} | "
-            f"{_format_metric(metrics, 'output_throughput')} | "
-            f"{_format_metric(metrics, 'total_token_throughput')} |"
-        )
-    lines.extend(
-        (
-            "",
-            "### 首 token 与端到端延迟",
-            "",
-            "| 配置 | Median TTFT (ms) | P99 TTFT (ms) | Median E2E (ms) | P99 E2E (ms) |",
-            "|---|---:|---:|---:|---:|",
-        )
-    )
-    for name in ("bf16", "fp8", "auto-4"):
-        metrics = performance.get(name, {})
-        lines.append(
-            f"| {name} | {_format_metric(metrics, 'median_ttft_ms')} | "
-            f"{_format_metric(metrics, 'p99_ttft_ms')} | "
-            f"{_format_metric(metrics, 'median_e2el_ms')} | "
-            f"{_format_metric(metrics, 'p99_e2el_ms')} |"
-        )
-    lines.extend(
-        (
-            "",
-            "### Decode 延迟",
-            "",
-            "| 配置 | Median TPOT (ms) | P99 TPOT (ms) | Median ITL (ms) | P99 ITL (ms) |",
-            "|---|---:|---:|---:|---:|",
-        )
-    )
-    for name in ("bf16", "fp8", "auto-4"):
-        metrics = performance.get(name, {})
-        lines.append(
-            f"| {name} | {_format_metric(metrics, 'median_tpot_ms')} | "
-            f"{_format_metric(metrics, 'p99_tpot_ms')} | "
-            f"{_format_metric(metrics, 'median_itl_ms')} | "
-            f"{_format_metric(metrics, 'p99_itl_ms')} |"
-        )
+        groups = performance.get(name, {}).get("scenario_groups", [])
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, Mapping):
+                continue
+            metrics = group.get("metrics", {})
+            if not isinstance(metrics, Mapping):
+                metrics = {}
+            lines.append(
+                f"| {name} | {group.get('input_length', 'N/A')} | "
+                f"{group.get('output_length', 'N/A')} | {group.get('repeats', 'N/A')} | "
+                f"{_format_metric(metrics, 'request_throughput')} | "
+                f"{_format_metric(metrics, 'output_throughput')} | "
+                f"{_format_metric(metrics, 'median_ttft_ms')} | "
+                f"{_format_metric(metrics, 'p99_ttft_ms')} | "
+                f"{_format_metric(metrics, 'median_tpot_ms')} | "
+                f"{_format_metric(metrics, 'p99_tpot_ms')} | "
+                f"{_format_metric(metrics, 'median_itl_ms')} | "
+                f"{_format_metric(metrics, 'p99_itl_ms')} |"
+            )
 
     checks = [
         ("FP8 capacity ≥ 1.85× BF16", fp8_capacity_gain >= 1.85),
@@ -395,9 +491,10 @@ def render_report(
         ("可测缺口时 recovery ≥ 50%", recovery is None or recovery >= 0.5),
         (
             "Auto-4 Q 高于 Random-4 中位数",
-            random_median is None or auto_q > random_median,
+            auto_q > random_median,
         ),
-        ("Auto-4 Q 高于 Inverted-4", inverted_q is None or auto_q > inverted_q),
+        ("Auto-4 Q 高于 Inverted-4", auto_q > inverted_q),
+        ("容量偏差或 page/block 证据完整", capacity_evidence_complete),
     ]
     lines.extend(("", "## 预注册验收", "", "| 条件 | 结果 |", "|---|---|"))
     for label, passed in checks:
@@ -418,8 +515,15 @@ def render_report(
 
     markdown_path = output_dir / "REPORT.zh-CN.md"
     csv_path = output_dir / "summary.csv"
+    scenario_csv_path = output_dir / "performance-by-scenario.csv"
     svg_path = output_dir / "capacity.svg"
     atomic_write_text(markdown_path, "\n".join(lines))
     atomic_write_text(csv_path, _summary_csv(aggregates, capacities, performance))
+    atomic_write_text(scenario_csv_path, _performance_scenario_csv(performance))
     render_capacity_svg(svg_path, capacities)
-    return {"markdown": markdown_path, "csv": csv_path, "svg": svg_path}
+    return {
+        "markdown": markdown_path,
+        "csv": csv_path,
+        "performance_csv": scenario_csv_path,
+        "svg": svg_path,
+    }

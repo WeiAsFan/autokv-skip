@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import statistics
@@ -16,7 +17,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from autokv.benchmark import BenchmarkRunner, Capacity, build_benchmark_matrix
+from autokv.benchmark import (
+    BenchmarkRunner,
+    Capacity,
+    aggregate_scenario_groups,
+    build_benchmark_matrix,
+    capacity_validation,
+    extract_performance_metrics,
+    parse_capacity_tokens,
+    telemetry_is_usable,
+)
 from autokv.client import VllmHttpError
 from autokv.commands import format_command, run_command, server_command
 from autokv.config import EXPECTED_DRIVER, Profile, load_profile
@@ -40,6 +50,7 @@ from autokv.niah import NiahCase, expected_answer, make_cases
 from autokv.report import render_report
 from autokv.selection import (
     Variant,
+    canonical_config_id,
     group_probe_variants,
     random_controls,
     select_bottom_layers,
@@ -79,6 +90,7 @@ class RuntimeContext:
     manifest: Mapping[str, Any]
     dataset_hash: str
     lock: Mapping[str, Any]
+    source: Mapping[str, Any]
     run_id: str
 
 
@@ -274,19 +286,202 @@ def _load_lock(root: Path, profile: Profile) -> Mapping[str, Any]:
     return _validate_lock(read_json(path), profile)
 
 
+def _source_identity(source_root: Path = REPOSITORY_ROOT) -> dict[str, Any]:
+    candidates = [source_root / "pyproject.toml"]
+    for directory, pattern in (("autokv", "*.py"), ("scripts", "*.py"), ("configs", "*.json")):
+        candidates.extend((source_root / directory).rglob(pattern))
+    files = sorted(
+        (path for path in candidates if path.is_file()),
+        key=lambda path: path.relative_to(source_root).as_posix(),
+    )
+    if not files:
+        raise ValueError("cannot identify AutoKV-Skip source files")
+    entries = []
+    tree = hashlib.sha256()
+    for path in files:
+        relative = path.relative_to(source_root).as_posix()
+        normalized = path.read_bytes().replace(b"\r\n", b"\n")
+        digest = hashlib.sha256(normalized).hexdigest()
+        entries.append({"path": relative, "sha256": digest})
+        tree.update(relative.encode("utf-8"))
+        tree.update(b"\0")
+        tree.update(digest.encode("ascii"))
+        tree.update(b"\n")
+
+    commit_result = run_command(
+        ("git", "-C", str(source_root), "rev-parse", "HEAD"), timeout=10
+    )
+    commit = commit_result.stdout.strip().lower()
+    if not commit_result.ok or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        commit = None
+    dirty_result = run_command(
+        (
+            "git",
+            "-C",
+            str(source_root),
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "autokv",
+            "scripts",
+            "configs",
+            "pyproject.toml",
+        ),
+        timeout=10,
+    )
+    dirty = bool(dirty_result.stdout.strip()) if dirty_result.ok else None
+    return {
+        "tree_sha256": tree.hexdigest(),
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "files": entries,
+    }
+
+
+def _ensure_run_manifest(context: RuntimeContext) -> Path:
+    path = context.root / "runs" / context.run_id / "run-manifest.json"
+    try:
+        profile_display_path = _relative(context.root, context.profile_path)
+    except ValueError:
+        profile_display_path = "packaged:" + context.profile_path.relative_to(
+            REPOSITORY_ROOT
+        ).as_posix()
+    expected = {
+        "schema_version": 1,
+        "run_id": context.run_id,
+        "source": context.source,
+        "profile": context.profile.name,
+        "profile_path": profile_display_path,
+        "profile_sha256": context.profile_hash,
+        "dataset_hash": context.dataset_hash,
+        "image_ref": context.lock["image_ref"],
+        "image_digest": context.lock["image_digest"],
+        "model_id": context.profile.model.model_id,
+        "model_revision": context.lock["model_revision"],
+        "storage_timezone": "UTC",
+        "display_timezone": "Asia/Shanghai",
+    }
+    if path.is_file():
+        observed = read_json(path)
+        if not isinstance(observed, Mapping):
+            raise ValueError("run manifest is not a JSON object")
+        immutable_keys = tuple(key for key in expected if key != "source")
+        if any(observed.get(key) != expected[key] for key in immutable_keys):
+            raise ValueError("run manifest differs from current immutable inputs")
+        if observed.get("source") != context.source:
+            raise ValueError("run manifest source identity differs from current code")
+        return path
+    atomic_write_json(
+        path,
+        {
+            **expected,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return path
+
+
+def _write_completion_manifest(
+    root: Path, run_id: str, source_tree_sha256: str
+) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", run_id):
+        raise ValueError("run_id contains unsafe characters")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_tree_sha256):
+        raise ValueError("source tree hash must be a 64-character SHA-256")
+    run_root = ensure_within(root, root / "runs" / run_id)
+    if not run_root.is_dir():
+        raise ValueError(f"run directory does not exist: {run_root}")
+    manifest_path = run_root / "completed-manifest.json"
+    entries = []
+    for path in sorted(run_root.rglob("*")):
+        if not path.is_file() or path == manifest_path:
+            continue
+        relative_to_run = path.relative_to(run_root)
+        if "_superseded" in relative_to_run.parts:
+            continue
+        entries.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": sha256_file(path),
+            }
+        )
+    if not entries:
+        raise ValueError("cannot complete a run with no active artifacts")
+    atomic_write_json(
+        manifest_path,
+        {
+            "schema_version": 1,
+            "complete": True,
+            "run_id": run_id,
+            "source_tree_sha256": source_tree_sha256,
+            "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+            "artifacts": entries,
+        },
+    )
+    return manifest_path
+
+
+def _completion_manifest_is_valid(root: Path, run_id: str) -> bool:
+    try:
+        run_root = ensure_within(root, root / "runs" / run_id)
+        path = run_root / "completed-manifest.json"
+        payload = read_json(path)
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("complete") is not True
+            or payload.get("run_id") != run_id
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(payload.get("source_tree_sha256", ""))
+            )
+        ):
+            return False
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            return False
+        observed_paths: set[str] = set()
+        for record in artifacts:
+            if not isinstance(record, Mapping):
+                return False
+            relative = record.get("path")
+            expected_hash = record.get("sha256")
+            if (
+                not isinstance(relative, str)
+                or relative in observed_paths
+                or not isinstance(expected_hash, str)
+            ):
+                return False
+            artifact = ensure_within(run_root, root / relative)
+            if not artifact.is_file() or sha256_file(artifact) != expected_hash:
+                return False
+            observed_paths.add(relative)
+        active_paths = {
+            path.relative_to(root).as_posix()
+            for path in run_root.rglob("*")
+            if path.is_file()
+            and path != run_root / "completed-manifest.json"
+            and "_superseded" not in path.relative_to(run_root).parts
+        }
+        return observed_paths == active_paths
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _runtime_context(root: Path, profile_name: str) -> RuntimeContext:
     profile, profile_path = _load_named_profile(root, profile_name)
     manifest = _load_manifest(root, profile, profile_path)
     lock = _load_lock(root, profile)
     dataset_hash = str(manifest["dataset_hash"])
     profile_hash = sha256_file(profile_path)
+    source = _source_identity()
     run_id = canonical_run_id(
         profile_hash,
         str(lock["image_digest"]),
         str(lock["model_revision"]),
         dataset_hash,
+        str(source["tree_sha256"]),
     )
-    return RuntimeContext(
+    context = RuntimeContext(
         root,
         profile,
         profile_path,
@@ -294,8 +489,11 @@ def _runtime_context(root: Path, profile_name: str) -> RuntimeContext:
         manifest,
         dataset_hash,
         lock,
+        source,
         run_id,
     )
+    _ensure_run_manifest(context)
+    return context
 
 
 def _linux_gate() -> None:
@@ -337,10 +535,18 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
     probe_samples = len(make_cases(profile, "probe"))
     final_samples = len(make_cases(profile, "final"))
     if profile.selection.mode == "coarse_to_fine":
-        core = 1 + 8 + 8 + 1
+        groups = group_probe_variants(
+            profile.model.num_layers, profile.selection.group_size
+        )
+        core = (
+            1
+            + len(groups)
+            + profile.selection.top_groups * profile.selection.group_size
+            + 1
+        )
     else:
         core = 1 + profile.model.num_layers + 1
-    quality_configurations = 11
+    quality_configurations = 3 + len(profile.selection.random_seeds) + 3
     benchmark_scenarios = len(build_benchmark_matrix(profile))
     placeholder_image = "vllm/vllm-openai@sha256:" + "f" * 64
     placeholder_revision = "a" * 40
@@ -430,17 +636,40 @@ def _smoke_is_complete(context: RuntimeContext) -> bool:
             _verified_path(context.root, artifact.get("path"), artifact.get("sha256"))
         return (
             payload.get("deterministic") is True
+            and payload.get("run_id") == context.run_id
             and payload.get("quality_mode") in {"nll", "edit_distance"}
         )
     except (OSError, TypeError, ValueError):
         return False
 
 
-def run_smoke(context: RuntimeContext, port: int) -> dict[str, Any]:
-    if _smoke_is_complete(context):
+def _validate_force_target(
+    force_config_id: str | None, variants: Sequence[Variant]
+) -> None:
+    if force_config_id is None:
+        return
+    if not re.fullmatch(r"[0-9a-f]{12}", force_config_id):
+        raise ValueError("--force must be an exact 12-character config ID")
+    available = {canonical_config_id(variant) for variant in variants}
+    if force_config_id not in available:
+        raise ValueError(
+            f"--force config ID is not part of this phase: {force_config_id}"
+        )
+
+
+def run_smoke(
+    context: RuntimeContext, port: int, force_config_id: str | None = None
+) -> dict[str, Any]:
+    _validate_force_target(force_config_id, (Variant.fp8(),))
+    if _smoke_is_complete(context) and force_config_id is None:
         return dict(read_json(_smoke_path(context)))
     case = NiahCase("smoke-1024-50-42", 1024, 0.5, 42, "KV-SMOKE-4242")
-    runner = ExperimentRunner(context.profile, context.root, context.lock)
+    runner = ExperimentRunner(
+        context.profile,
+        context.root,
+        context.lock,
+        force_config_id=force_config_id,
+    )
     first_path = runner.run_variant(
         Variant.fp8(),
         (case,),
@@ -526,7 +755,9 @@ def _locked_quality_mode(context: RuntimeContext) -> str:
     return str(mode)
 
 
-def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
+def run_probe(
+    context: RuntimeContext, port: int, force_config_id: str | None = None
+) -> dict[str, Any]:
     quality_mode = _locked_quality_mode(context)
     cases = _load_cases(context.root, context.profile, "probe")
     runner = ExperimentRunner(
@@ -534,6 +765,7 @@ def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
         context.root,
         context.lock,
         quality_mode=quality_mode,
+        force_config_id=force_config_id,
     )
     artifacts: dict[str, dict[str, str]] = {}
     baseline_path = runner.run_variant(
@@ -582,6 +814,10 @@ def run_probe(context: RuntimeContext, port: int) -> dict[str, Any]:
         port=port,
     )
     artifacts["auto-4"] = _artifact_record(context.root, auto_path)
+    if force_config_id is not None and not runner.force_applied:
+        raise ValueError(
+            f"--force config ID is not part of the realized probe: {force_config_id}"
+        )
     payload = {
         "schema_version": 1,
         "complete": True,
@@ -626,6 +862,30 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
         context.root, baseline_record.get("path"), baseline_record.get("sha256")
     )
     baseline = _mean_quality(baseline_path, quality_mode)
+    group_scores: dict[str, float] = {}
+    if context.profile.selection.mode == "coarse_to_fine":
+        indexed_group_scores = index.get("group_scores")
+        if not isinstance(indexed_group_scores, Mapping):
+            raise ValueError("probe index has no group score map")
+        for variant in group_probe_variants(
+            context.profile.model.num_layers,
+            context.profile.selection.group_size,
+        ):
+            record = artifact_index.get(variant.name)
+            if not isinstance(record, Mapping):
+                raise ValueError(f"probe artifact missing for group {variant.name}")
+            path = _verified_path(
+                context.root, record.get("path"), record.get("sha256")
+            )
+            score = _mean_quality(path, quality_mode) - baseline
+            indexed_score = indexed_group_scores.get(variant.name)
+            if not isinstance(indexed_score, (int, float)) or not math.isclose(
+                score, float(indexed_score), rel_tol=0.0, abs_tol=1e-12
+            ):
+                raise ValueError(
+                    f"probe group score does not reproduce: {variant.name}"
+                )
+            group_scores[variant.name] = score
     candidate_layers_raw = index.get("candidate_layers")
     if not isinstance(candidate_layers_raw, list):
         raise ValueError("probe index has no candidate layer list")
@@ -674,6 +934,7 @@ def run_select(context: RuntimeContext) -> dict[str, Any]:
         "last_layers": list(last_layers),
         "random_layers": [list(layers) for layers in random_layers],
         "random_seeds": list(context.profile.selection.random_seeds),
+        "group_scores": group_scores,
         "layer_scores": {str(layer): score for layer, score in sorted(layer_scores.items())},
         "probe_index": _artifact_record(context.root, index_path),
     }
@@ -695,6 +956,12 @@ def _load_selection(context: RuntimeContext) -> Mapping[str, Any]:
         raise ValueError("selection run ID does not match current immutable inputs")
     if selection.get("quality_mode") != _locked_quality_mode(context):
         raise ValueError("selection quality mode differs from the smoke lock")
+    probe_record = selection.get("probe_index")
+    if not isinstance(probe_record, Mapping):
+        raise ValueError("selection has no verified probe index record")
+    _verified_path(
+        context.root, probe_record.get("path"), probe_record.get("sha256")
+    )
     return selection
 
 
@@ -721,18 +988,23 @@ def _quality_variants(selection: Mapping[str, Any]) -> tuple[Variant, ...]:
     return tuple(variants)
 
 
-def run_evaluate(context: RuntimeContext, port: int) -> dict[str, Any]:
+def run_evaluate(
+    context: RuntimeContext, port: int, force_config_id: str | None = None
+) -> dict[str, Any]:
     quality_mode = _locked_quality_mode(context)
     selection = _load_selection(context)
     cases = _load_cases(context.root, context.profile, "final")
+    variants = _quality_variants(selection)
+    _validate_force_target(force_config_id, variants)
     runner = ExperimentRunner(
         context.profile,
         context.root,
         context.lock,
         quality_mode=quality_mode,
+        force_config_id=force_config_id,
     )
     artifacts = {}
-    for variant in _quality_variants(selection):
+    for variant in variants:
         path = runner.run_variant(
             variant,
             cases,
@@ -756,7 +1028,9 @@ def run_evaluate(context: RuntimeContext, port: int) -> dict[str, Any]:
     return {**payload, "index": str(path)}
 
 
-def run_benchmark(context: RuntimeContext, port: int) -> dict[str, Any]:
+def run_benchmark(
+    context: RuntimeContext, port: int, force_config_id: str | None = None
+) -> dict[str, Any]:
     _require_smoke(context)
     selection = _load_selection(context)
     variants = (
@@ -764,7 +1038,13 @@ def run_benchmark(context: RuntimeContext, port: int) -> dict[str, Any]:
         Variant.fp8(),
         Variant.mixed("auto-4", selection["auto_layers"]),
     )
-    runner = BenchmarkRunner(context.profile, context.root, context.lock)
+    _validate_force_target(force_config_id, variants)
+    runner = BenchmarkRunner(
+        context.profile,
+        context.root,
+        context.lock,
+        force_config_id=force_config_id,
+    )
     summaries = {}
     for variant in variants:
         path = runner.run_variant(variant, run_id=context.run_id, port=port)
@@ -773,6 +1053,7 @@ def run_benchmark(context: RuntimeContext, port: int) -> dict[str, Any]:
         "schema_version": 1,
         "complete": True,
         "run_id": context.run_id,
+        "dataset_hash": context.dataset_hash,
         "scenario_count_per_configuration": len(build_benchmark_matrix(context.profile)),
         "summaries": summaries,
     }
@@ -788,6 +1069,14 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
     perf_index_path = context.root / "runs" / context.run_id / "perf" / "index.json"
     if not quality_index_path.is_file() or not perf_index_path.is_file():
         raise IncompleteDataError("quality/performance indexes are incomplete")
+    if not _quality_status_is_complete(
+        context.root, context.run_id, context.dataset_hash, context.profile
+    ) or not _perf_status_is_complete(
+        context.root, context.run_id, context.dataset_hash, context.profile
+    ):
+        raise IncompleteDataError(
+            "quality/performance artifact hashes or schemas are incomplete"
+        )
     quality_index = read_json(quality_index_path)
     perf_index = read_json(perf_index_path)
     if not isinstance(quality_index, Mapping) or quality_index.get("complete") is not True:
@@ -819,7 +1108,16 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
             raise IncompleteDataError(f"benchmark summary is incomplete: {path}")
         capacity = summary.get("capacity")
         aggregate = summary.get("aggregate")
-        if not isinstance(capacity, Mapping) or not isinstance(aggregate, Mapping):
+        scenario_groups = summary.get("scenario_groups")
+        validation = summary.get("capacity_validation")
+        telemetry = summary.get("telemetry")
+        if (
+            not isinstance(capacity, Mapping)
+            or not isinstance(aggregate, Mapping)
+            or not isinstance(scenario_groups, list)
+            or not isinstance(validation, Mapping)
+            or not isinstance(telemetry, Mapping)
+        ):
             raise ValueError(f"benchmark summary is malformed: {path}")
         capacities[name] = Capacity(
             tokens=int(capacity["tokens"]),
@@ -832,13 +1130,19 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
                 else float(capacity["max_concurrency"])
             ),
         )
-        performance[name] = aggregate
+        performance[name] = {
+            "overall_descriptive_mean": aggregate,
+            "scenario_groups": scenario_groups,
+            "capacity_validation": validation,
+            "telemetry": telemetry,
+        }
     output_dir = context.root / "runs" / context.run_id / "report"
+    report_selection = {**dict(selection), "source": context.source}
     artifacts = render_report(
         output_dir,
         context.profile,
         context.lock,
-        selection,
+        report_selection,
         quality,
         capacities,
         performance,
@@ -854,13 +1158,317 @@ def run_report(context: RuntimeContext) -> dict[str, Any]:
     }
     index_path = output_dir / "index.json"
     atomic_write_json(index_path, index)
+    completed_manifest = _write_completion_manifest(
+        context.root,
+        context.run_id,
+        str(context.source["tree_sha256"]),
+    )
     return {
         "run_id": context.run_id,
         "report": str(artifacts["markdown"]),
         "csv": str(artifacts["csv"]),
+        "performance_csv": str(artifacts["performance_csv"]),
         "svg": str(artifacts["svg"]),
         "index": str(index_path),
+        "completed_manifest": str(completed_manifest),
     }
+
+
+def _record_is_valid(root: Path, record: Any) -> bool:
+    if not isinstance(record, Mapping):
+        return False
+    try:
+        _verified_path(root, record.get("path"), record.get("sha256"))
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _smoke_status_is_complete(root: Path, run_id: str) -> bool:
+    path = root / "runs" / run_id / "smoke" / "smoke.json"
+    try:
+        payload = read_json(path)
+        return (
+            isinstance(payload, Mapping)
+            and payload.get("complete") is True
+            and payload.get("deterministic") is True
+            and payload.get("run_id") == run_id
+            and payload.get("quality_mode") in {"nll", "edit_distance"}
+            and _record_is_valid(root, payload.get("first"))
+            and _record_is_valid(root, payload.get("second"))
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _probe_status_is_complete(
+    root: Path,
+    run_id: str,
+    dataset_hash: str,
+    profile: Profile,
+) -> bool:
+    path = root / "runs" / run_id / "probe" / "index.json"
+    try:
+        payload = read_json(path)
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("complete") is not True
+            or payload.get("run_id") != run_id
+            or payload.get("dataset_hash") != dataset_hash
+            or payload.get("quality_mode") not in {"nll", "edit_distance"}
+        ):
+            return False
+        artifacts = payload.get("artifacts")
+        candidates = payload.get("candidate_layers")
+        auto_layers = payload.get("auto_layers")
+        if (
+            not isinstance(artifacts, Mapping)
+            or not isinstance(candidates, list)
+            or not isinstance(auto_layers, list)
+            or len(auto_layers) != profile.selection.k
+        ):
+            return False
+        expected = {"fp8", "auto-4", *(f"layer-{int(layer):02d}" for layer in candidates)}
+        if profile.selection.mode == "coarse_to_fine":
+            expected.update(
+                variant.name
+                for variant in group_probe_variants(
+                    profile.model.num_layers, profile.selection.group_size
+                )
+            )
+        if set(artifacts) != expected:
+            return False
+        mode = str(payload["quality_mode"])
+        for record in artifacts.values():
+            if not _record_is_valid(root, record):
+                return False
+            assert isinstance(record, Mapping)
+            artifact_path = _verified_path(
+                root, record.get("path"), record.get("sha256")
+            )
+            _mean_quality(artifact_path, mode)
+        return True
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def _selection_status_is_complete(
+    root: Path,
+    run_id: str,
+    dataset_hash: str,
+    profile: Profile,
+) -> bool:
+    path = root / "runs" / run_id / "selection.json"
+    try:
+        payload = read_json(path)
+        random_layers = payload.get("random_layers") if isinstance(payload, Mapping) else None
+        layer_scores = payload.get("layer_scores") if isinstance(payload, Mapping) else None
+        return (
+            isinstance(payload, Mapping)
+            and payload.get("complete") is True
+            and payload.get("run_id") == run_id
+            and payload.get("dataset_hash") == dataset_hash
+            and payload.get("quality_mode") in {"nll", "edit_distance"}
+            and isinstance(payload.get("auto_layers"), list)
+            and len(payload["auto_layers"]) == profile.selection.k
+            and isinstance(random_layers, list)
+            and len(random_layers) == len(profile.selection.random_seeds)
+            and all(
+                isinstance(layers, list) and len(layers) == profile.selection.k
+                for layers in random_layers
+            )
+            and isinstance(layer_scores, Mapping)
+            and _record_is_valid(root, payload.get("probe_index"))
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def _quality_status_is_complete(
+    root: Path,
+    run_id: str,
+    dataset_hash: str,
+    profile: Profile,
+) -> bool:
+    path = root / "runs" / run_id / "quality" / "index.json"
+    required = {
+        "bf16",
+        "fp8",
+        "auto-4",
+        *(f"random-4-{index}" for index in range(1, len(profile.selection.random_seeds) + 1)),
+        "first-4",
+        "last-4",
+        "inverted-4",
+    }
+    try:
+        payload = read_json(path)
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("complete") is not True
+            or payload.get("run_id") != run_id
+            or payload.get("dataset_hash") != dataset_hash
+            or payload.get("quality_mode") not in {"nll", "edit_distance"}
+        ):
+            return False
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, Mapping) or set(artifacts) != required:
+            return False
+        expected_ids: set[str] | None = None
+        for record in artifacts.values():
+            if not _record_is_valid(root, record):
+                return False
+            assert isinstance(record, Mapping)
+            artifact_path = _verified_path(
+                root, record.get("path"), record.get("sha256")
+            )
+            rows = read_jsonl(artifact_path)
+            if len(rows) != len(make_cases(profile, "final")):
+                return False
+            _mean_quality(artifact_path, str(payload["quality_mode"]))
+            ids = {str(row.get("sample_id")) for row in rows}
+            if len(ids) != len(rows):
+                return False
+            if expected_ids is None:
+                expected_ids = ids
+            elif ids != expected_ids:
+                return False
+        return True
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def _perf_status_is_complete(
+    root: Path, run_id: str, dataset_hash: str, profile: Profile
+) -> bool:
+    path = root / "runs" / run_id / "perf" / "index.json"
+    try:
+        payload = read_json(path)
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("complete") is not True
+            or payload.get("run_id") != run_id
+            or payload.get("dataset_hash") != dataset_hash
+        ):
+            return False
+        summaries = payload.get("summaries")
+        if not isinstance(summaries, Mapping) or set(summaries) != {
+            "bf16",
+            "fp8",
+            "auto-4",
+        }:
+            return False
+        expected_scenarios = len(build_benchmark_matrix(profile))
+        expected_cases = [
+            {
+                "input_length": case.input_length,
+                "output_length": case.output_length,
+                "repeat": case.repeat,
+            }
+            for case in build_benchmark_matrix(profile)
+        ]
+        for name, record in summaries.items():
+            if not _record_is_valid(root, record):
+                return False
+            assert isinstance(record, Mapping)
+            summary_path = _verified_path(
+                root, record.get("path"), record.get("sha256")
+            )
+            summary = read_json(summary_path)
+            if (
+                not isinstance(summary, Mapping)
+                or summary.get("schema_version") != 2
+                or summary.get("complete") is not True
+                or summary.get("run_id") != run_id
+                or not isinstance(summary.get("variant"), Mapping)
+                or summary["variant"].get("name") != name
+                or not isinstance(summary.get("scenarios"), list)
+                or len(summary["scenarios"]) != expected_scenarios
+                or not isinstance(summary.get("scenario_groups"), list)
+                or not isinstance(summary.get("capacity_validation"), Mapping)
+                or not _record_is_valid(root, summary.get("telemetry"))
+                or not _record_is_valid(root, summary.get("server_log"))
+                or not _record_is_valid(root, summary.get("command_record"))
+            ):
+                return False
+            variant_raw = summary["variant"]
+            variant = Variant(
+                str(variant_raw.get("name", "")),
+                str(variant_raw.get("kv_dtype", "")),
+                tuple(int(layer) for layer in variant_raw.get("skip_layers", [])),
+            )
+            variant.validate_for_model(profile.model.num_layers)
+            actual_cases = []
+            for scenario in summary["scenarios"]:
+                if not isinstance(scenario, Mapping) or not _record_is_valid(
+                    root,
+                    {
+                        "path": scenario.get("raw_result"),
+                        "sha256": scenario.get("sha256"),
+                    },
+                ):
+                    return False
+                raw_path = _verified_path(
+                    root, scenario.get("raw_result"), scenario.get("sha256")
+                )
+                raw_payload = read_json(raw_path)
+                if (
+                    not isinstance(raw_payload, Mapping)
+                    or scenario.get("metrics")
+                    != extract_performance_metrics(raw_payload)
+                ):
+                    return False
+                actual_cases.append(
+                    {
+                        "input_length": scenario.get("input_length"),
+                        "output_length": scenario.get("output_length"),
+                        "repeat": scenario.get("repeat"),
+                    }
+                )
+            if actual_cases != expected_cases or summary.get(
+                "scenario_groups"
+            ) != aggregate_scenario_groups(summary["scenarios"]):
+                return False
+            telemetry_record = summary["telemetry"]
+            assert isinstance(telemetry_record, Mapping)
+            telemetry_path = _verified_path(
+                root,
+                telemetry_record.get("path"),
+                telemetry_record.get("sha256"),
+            )
+            if not telemetry_is_usable(telemetry_path):
+                return False
+            capacity_raw = summary.get("capacity")
+            server_record = summary.get("server_log")
+            if not isinstance(capacity_raw, Mapping) or not isinstance(
+                server_record, Mapping
+            ):
+                return False
+            measured_capacity = Capacity(
+                int(capacity_raw["tokens"]),
+                (
+                    None
+                    if capacity_raw.get("model_length") is None
+                    else int(capacity_raw["model_length"])
+                ),
+                (
+                    None
+                    if capacity_raw.get("max_concurrency") is None
+                    else float(capacity_raw["max_concurrency"])
+                ),
+            )
+            server_path = _verified_path(
+                root, server_record.get("path"), server_record.get("sha256")
+            )
+            server_log = server_path.read_text(encoding="utf-8")
+            if (
+                parse_capacity_tokens(server_log) != measured_capacity
+                or summary.get("capacity_validation")
+                != capacity_validation(profile, variant, measured_capacity, server_log)
+            ):
+                return False
+        return True
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
 
 
 def read_status(root: Path, profile_name: str) -> dict[str, Any]:
@@ -885,12 +1493,14 @@ def read_status(root: Path, profile_name: str) -> dict[str, Any]:
         lock = None
         lock_ready = False
     run_id = None
+    source = _source_identity()
     if data_ready and lock_ready and manifest is not None and lock is not None:
         run_id = canonical_run_id(
             sha256_file(profile_path),
             str(lock["image_digest"]),
             str(lock["model_revision"]),
             str(manifest["dataset_hash"]),
+            str(source["tree_sha256"]),
         )
     steps = {
         "doctor": doctor_ready,
@@ -904,15 +1514,30 @@ def read_status(root: Path, profile_name: str) -> dict[str, Any]:
         "report": False,
     }
     if run_id is not None:
-        run_root = root / "runs" / run_id
+        dataset_hash = str(manifest["dataset_hash"])
+        smoke_ready = _smoke_status_is_complete(root, run_id)
+        probe_ready = smoke_ready and _probe_status_is_complete(
+            root, run_id, dataset_hash, profile
+        )
+        selection_ready = probe_ready and _selection_status_is_complete(
+            root, run_id, dataset_hash, profile
+        )
+        quality_ready = selection_ready and _quality_status_is_complete(
+            root, run_id, dataset_hash, profile
+        )
+        perf_ready = selection_ready and _perf_status_is_complete(
+            root, run_id, dataset_hash, profile
+        )
         steps.update(
             {
-                "smoke": (run_root / "smoke" / "smoke.json").is_file(),
-                "probe": (run_root / "probe" / "index.json").is_file(),
-                "select": (run_root / "selection.json").is_file(),
-                "evaluate": (run_root / "quality" / "index.json").is_file(),
-                "benchmark": (run_root / "perf" / "index.json").is_file(),
-                "report": (run_root / "report" / "index.json").is_file(),
+                "smoke": smoke_ready,
+                "probe": probe_ready,
+                "select": selection_ready,
+                "evaluate": quality_ready,
+                "benchmark": perf_ready,
+                "report": quality_ready
+                and perf_ready
+                and _completion_manifest_is_valid(root, run_id),
             }
         )
     next_step = next((name for name in RUN_STEPS if not steps[name]), None)
@@ -923,6 +1548,9 @@ def read_status(root: Path, profile_name: str) -> dict[str, Any]:
         "lock_ready": lock_ready,
         "data_ready": data_ready,
         "run_id": run_id,
+        "source_tree_sha256": source["tree_sha256"],
+        "git_commit": source["git_commit"],
+        "git_dirty": source["git_dirty"],
         "steps": steps,
         "next_step": next_step,
         "read_only": True,
@@ -947,6 +1575,12 @@ def _redact_diagnostic_text(text: str) -> str:
         r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+", r"\1***", text
     )
     text = re.sub(r"(?i)(HF_TOKEN\s*[:=]\s*)[^\s\"']+", r"\1***", text)
+    text = re.sub(
+        r"(?i)([?&](?:access_token|api_key|auth|authorization|key|token|"
+        r"x-amz-signature|x-goog-signature)=)[^&\s\"']+",
+        r"\1***",
+        text,
+    )
     return text
 
 
@@ -1090,7 +1724,9 @@ def _emit(payload: Mapping[str, Any], json_output: bool) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _add_common(parser: argparse.ArgumentParser, *, port: bool = False) -> None:
+def _add_common(
+    parser: argparse.ArgumentParser, *, port: bool = False, force: bool = False
+) -> None:
     parser.add_argument(
         "--project-root",
         default=str(REPOSITORY_ROOT),
@@ -1100,6 +1736,14 @@ def _add_common(parser: argparse.ArgumentParser, *, port: bool = False) -> None:
     parser.add_argument("--json", action="store_true", help="emit one JSON object")
     if port:
         parser.add_argument("--port", type=int, default=8000)
+    if force:
+        parser.add_argument(
+            "--force",
+            metavar="CONFIG_ID",
+            help=(
+                "archive and rerun only this exact 12-character configuration ID"
+            ),
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1126,9 +1770,14 @@ def build_parser() -> argparse.ArgumentParser:
         "run": "execute the complete resumable workflow",
     }
     gpu_port_commands = {"smoke", "probe", "evaluate", "benchmark", "run"}
+    force_commands = {"smoke", "probe", "evaluate", "benchmark"}
     for name, description in descriptions.items():
         command_parser = subparsers.add_parser(name, help=description, description=description)
-        _add_common(command_parser, port=name in gpu_port_commands)
+        _add_common(
+            command_parser,
+            port=name in gpu_port_commands,
+            force=name in force_commands,
+        )
     return parser
 
 
@@ -1152,13 +1801,13 @@ def _dispatch(args: argparse.Namespace) -> Mapping[str, Any]:
         return run_select(context) if command == "select" else run_report(context)
     context = _gpu_context(root, args.profile)
     if command == "smoke":
-        return run_smoke(context, args.port)
+        return run_smoke(context, args.port, args.force)
     if command == "probe":
-        return run_probe(context, args.port)
+        return run_probe(context, args.port, args.force)
     if command == "evaluate":
-        return run_evaluate(context, args.port)
+        return run_evaluate(context, args.port, args.force)
     if command == "benchmark":
-        return run_benchmark(context, args.port)
+        return run_benchmark(context, args.port, args.force)
     if command == "run":
         return run_all(root, args.profile, args.port)
     raise ValueError(f"unknown command: {command}")
@@ -1177,7 +1826,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (VllmHttpError, TimeoutError) as exc:
         print(f"server/http error: {exc}", file=sys.stderr)
         return EXIT_HTTP
-    except (DoctorError, ValueError, TypeError) as exc:
+    except (DoctorError, IndexError, KeyError, ValueError, TypeError) as exc:
         print(f"invalid/gate error: {exc}", file=sys.stderr)
         return EXIT_INVALID
     except (FileNotFoundError, OSError, RuntimeError) as exc:

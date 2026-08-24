@@ -26,6 +26,32 @@
 
 ---
 
+## 在第一次登录服务器前：复制已实现的交付包
+
+推荐使用交付物 `autokv-skip-server-bundle.tar.gz` 和同名 `.sha256` 文件。它不含模型、运行结果或 `.git`，但包含完整源码、冻结配置、测试、调研和手册。先在能看到交付物的工作站执行（把登录名和地址替换为自己的）：
+
+```bash
+sha256sum -c autokv-skip-server-bundle.tar.gz.sha256
+scp autokv-skip-server-bundle.tar.gz \
+  autokv-skip-server-bundle.tar.gz.sha256 \
+  LOGIN_NAME@SERVER_ADDRESS:~/
+```
+
+第一次登录服务器后执行：
+
+```bash
+cd ~
+sha256sum -c autokv-skip-server-bundle.tar.gz.sha256
+mkdir -p autokv-skip-work
+tar -xzf autokv-skip-server-bundle.tar.gz -C autokv-skip-work
+cd autokv-skip-work/autokv-skip
+pwd -P
+```
+
+如果采用组织内部文件传输工具，只要服务器端两文件的 SHA-256 校验通过即可。若你复制的是完整目录而非交付包，从该目录开始阶段 0；不要只复制 `autokv/` 而漏掉 `configs/`、`scripts/` 或 `pyproject.toml`。
+
+---
+
 ## 阶段 0：打印清单并确认拿到完整仓库
 
 ### 命令
@@ -36,6 +62,7 @@ test -f pyproject.toml
 test -f RUNBOOK.zh-CN.md
 test -f configs/quick.json
 test -f autokv/cli.py
+test -f scripts/verify.py
 python3 - <<'PY'
 items = [
     "0 完整仓库",
@@ -70,13 +97,13 @@ git rev-parse HEAD 2>/dev/null || true
 
 ### 成功判据
 
-四个 `test -f` 均无输出且退出码为 0；清单显示阶段 0–13。
+五个 `test -f` 均无输出且退出码为 0；清单显示阶段 0–13。
 
 ### 失败分支
 
 1. 缺少任一文件：不要只复制单个 Python 文件；重新复制整个 `autokv-skip` 目录。
 2. 文件权限不可读：执行 `ls -la` 查明所有者；只修正本项目目录权限，不对系统目录做递归权限修改。
-3. Git 显示本地改动：可以继续，但先把 `git diff` 保存；正式报告会锁 profile/data/image/model，不会自动覆盖源码。
+3. Git 显示本地改动：先把 `git diff` 保存。run ID 会绑定实际运行源码树 SHA-256，`run-manifest.json` 还会记录 Git commit/dirty 状态；不要在一个 run 中途改 Python 或配置文件。
 
 ---
 
@@ -572,7 +599,7 @@ python3 -m autokv smoke \
 
 ```bash
 python3 -m autokv status --project-root "$AUTOKV_ROOT" --profile quick --json
-find runs -path '*/smoke/smoke.json' -o -path '*/smoke-*.server.log' -print
+find runs \( -path '*/smoke/smoke.json' -o -path '*/smoke-*.server.log' \) -print
 grep -RHiE 'FLASHINFER|FP8|GPU KV cache size|Maximum concurrency' runs/*/smoke-*/*.server.log
 ```
 
@@ -582,7 +609,7 @@ grep -RHiE 'FLASHINFER|FP8|GPU KV cache size|Maximum concurrency' runs/*/smoke-*
 
 ### 成功判据
 
-退出码 0；`smoke.json` 中 `complete=true`、`deterministic=true`，四个 comparison 字段都为 true，`quality_mode` 只能是 `nll` 或 `edit_distance`，两次 capacity 完全相等；两次日志都确认 FlashInfer、FP8 KV 和容量。
+退出码 0；`smoke.json` 中 `complete=true`、`deterministic=true`，四个 comparison 字段都为 true，`quality_mode` 只能是 `nll` 或 `edit_distance`，两次 capacity 完全相等；两次日志都确认 FlashInfer、FP8 KV 和容量。此时 `runs/<run-id>/run-manifest.json` 必须存在，并含 profile、dataset、image、model revision、源码树 SHA-256 和 Git 身份。
 
 ### 失败分支
 
@@ -642,7 +669,7 @@ quick 总 GPU 时间约 5–12 小时。首次 kernel compilation、磁盘速度
 
 ### 成功判据
 
-tmux session 存在；最终 `quick_run_exit=0`；`run` JSON 的 `complete=true`、`completed_steps` 含全部 9 阶段并给出 report/csv/svg 路径。
+tmux session 存在；最终 `quick_run_exit=0`；`run` JSON 的 `complete=true`、`completed_steps` 含全部 9 阶段并给出 report/csv/performance_csv/svg 路径。每个 server 的 command JSON 都有 `inspected_server_argv`；Auto-4 server log 的 32 个逐层条目必须证明恰好所选 4 层为 `auto`、其余为 `fp8_e4m3`。每个性能配置还必须有非空的 `*.dmon.log`，其命令为只读的 `nvidia-smi dmon -s pucm -d 1 -o DT`。
 
 ### 失败分支
 
@@ -650,6 +677,7 @@ tmux session 存在；最终 `quick_run_exit=0`；`run` JSON 的 `complete=true`
 2. 8000 端口被占：用 `ss -ltnp | grep ':8000'` 查明所有者。若是外部服务，整次实验统一改为 `--port 18000`；不要结束未知进程。
 3. 某次请求超时：控制器会停止并重启同一个精确配置，最多重启 2 次，并复用已经校验的样本行；仍失败才退出。不要删 `runs/`；进入阶段 11 诊断，然后以同 profile、root、port 重跑。
 4. 不要开第二个 quick 进程；单卡并发运行会破坏显存和性能公平性。
+5. `nvidia-smi dmon` 启动失败：先单独执行 `nvidia-smi dmon -s pucm -d 1 -o DT -c 2`；它只读且不会改驱动。若该命令在 R535 上失败，保存原始输出并停止 benchmark，不要静默丢弃 GPU 利用率/功耗证据。
 
 ---
 
@@ -716,6 +744,42 @@ status 的已完成步骤逐步变为 true；不存在两个带项目 label 的�
 4. 有外部容器：控制器会检查 label，拒绝停止或移除非本项目容器。不要手工使用模糊容器名批量停止。
 5. 单个 JSONL 被手工编辑后 hash 不符：保留证据并生成 diagnose；不要伪造 state hash。
 
+### 仅在精确产物损坏时使用 `--force CONFIG_ID`
+
+`status` 现在会递归核对索引、原始 JSONL、server/command/dmon 日志和 SHA-256，不能用一个写着 `complete=true` 的损坏文件骗过。先运行 diagnose，再列出已有的 12 位配置 ID：
+
+```bash
+python3 - <<'PY'
+import pathlib, re
+run_id = input("RUN_ID: ").strip()
+root = pathlib.Path("runs") / run_id
+for path in sorted(root.rglob("*.command.json")):
+    match = re.search(r"-([0-9a-f]{12})\.command\.json$", path.name)
+    if match:
+        print(f"phase={path.parent.name:10s} config_id={match.group(1)} file={path}")
+PY
+```
+
+从错误消息或上表选中**一个** ID，令 `CONFIG_ID` 为该 12 位值，再按损坏文件所属阶段只执行以下四条中的一条：
+
+```bash
+CONFIG_ID=0123456789ab
+# 只复制并执行所属阶段的一行；不要一次运行四行：
+# python3 -m autokv smoke --project-root "$AUTOKV_ROOT" --profile quick --port 8000 --force "$CONFIG_ID" --json
+# python3 -m autokv probe --project-root "$AUTOKV_ROOT" --profile quick --port 8000 --force "$CONFIG_ID" --json
+# python3 -m autokv evaluate --project-root "$AUTOKV_ROOT" --profile quick --port 8000 --force "$CONFIG_ID" --json
+# python3 -m autokv benchmark --project-root "$AUTOKV_ROOT" --profile quick --port 8000 --force "$CONFIG_ID" --json
+```
+
+不要原样使用示例 ID；不存在于该阶段时命令会拒绝。`run` 故意不接受 `--force`，以免一个 ID 在多个阶段被意外重跑。force 只把该配置的精确产物移动到 `runs/$RUN_ID/_superseded/<UTC时间>-<阶段>-<ID>-.../`，不删除旧证据；随后执行普通 `run`，让 selection、quality/perf index、report 和 `completed-manifest.json` 从有效产物重建：
+
+```bash
+python3 -m autokv run --project-root "$AUTOKV_ROOT" --profile quick --port 8000 --json
+python3 -m autokv status --project-root "$AUTOKV_ROOT" --profile quick --json | python3 -m json.tool
+```
+
+如果错误消息不是“integrity mismatch”，不要凭猜测 force；先按对应 gate/HTTP/Docker 失败分支处理。force 不是调参或挑选更好随机结果的工具。
+
 ---
 
 ## 阶段 12：生成报告、逐项验收并导出面试材料
@@ -734,13 +798,20 @@ RUN_ID="$(python3 -m autokv status --project-root "$AUTOKV_ROOT" --profile quick
 REPORT_DIR="runs/$RUN_ID/report"
 sed -n '1,260p' "$REPORT_DIR/REPORT.zh-CN.md"
 column -s, -t < "$REPORT_DIR/summary.csv" | sed -n '1,40p'
+column -s, -t < "$REPORT_DIR/performance-by-scenario.csv" | sed -n '1,80p'
 test -s "$REPORT_DIR/capacity.svg"
+test -s "runs/$RUN_ID/run-manifest.json"
+test -s "runs/$RUN_ID/completed-manifest.json"
+test "$(find "runs/$RUN_ID/perf" -maxdepth 1 -name '*.dmon.log' -type f -size +0c | wc -l)" -eq 3
 sha256sum \
   runs/_environment/doctor.json \
   runs/_environment/lock.json \
+  "runs/$RUN_ID/run-manifest.json" \
+  "runs/$RUN_ID/completed-manifest.json" \
   "runs/$RUN_ID/selection.json" \
   "$REPORT_DIR/REPORT.zh-CN.md" \
   "$REPORT_DIR/summary.csv" \
+  "$REPORT_DIR/performance-by-scenario.csv" \
   "$REPORT_DIR/capacity.svg"
 ```
 
@@ -751,6 +822,8 @@ mkdir -p exports
 tar -czf "exports/autokv-skip-$RUN_ID-interview.tar.gz" \
   README.md RUNBOOK.zh-CN.md configs/quick.json \
   runs/_environment/doctor.json runs/_environment/lock.json \
+  "runs/$RUN_ID/run-manifest.json" \
+  "runs/$RUN_ID/completed-manifest.json" \
   "runs/$RUN_ID/selection.json" \
   "runs/$RUN_ID/probe/index.json" \
   "runs/$RUN_ID/quality/index.json" \
@@ -769,19 +842,22 @@ tar -tzf "exports/autokv-skip-$RUN_ID-interview.tar.gz" | sed -n '1,120p'
 按以下清单逐项确认：
 
 - 报告显示驱动 `535.230.02`、镜像 `@sha256:`、模型 40 位 revision、FlashInfer、16G；
+- 报告和 `run-manifest.json` 显示同一个源码树 SHA-256；`completed-manifest.json` 完整哈希覆盖活跃 run 产物；
 - selection 恰好 4 个 Auto 层；5 个 Random-4 唯一，且没有重复 Auto/First/Last/Inverted；
 - BF16、FP8、Auto-4 使用同一 dataset hash、镜像 digest、模型 revision；
 - FP8 实测 KV capacity / BF16 是否达到 1.85×；Auto-4 是否达到 1.65×；
 - 只有 `Q_bf16-Q_fp8>0.01` 才显示 gap recovery；
 - Auto-4 是否高于 Random-4 中位数和 Inverted-4；
 - 若未通过，报告明确写“未通过”或“未观察到足够缺口”，没有把噪声称为提升；
-- 性能结论区分 TTFT、TPOT/ITL、吞吐与容量，不声称 A6000 有原生 FP8 Tensor Core；
+- `performance-by-scenario.csv` 按相同 input/output length 比较 BF16、FP8、Auto-4，不拿异构长度的总均值冒充延迟对比；
+- 三份非空 `nvidia-smi dmon` 日志被索引，性能结论区分 TTFT、TPOT/ITL、吞吐、显存/利用率与容量，不声称 A6000 有原生 FP8 Tensor Core；
+- 报告展示分组和逐层敏感性表，并标记最终 4 层；理论/实测 KV tokens 偏差超过 10% 时必须列出 page/block 证据，否则验收项显示未通过；
 - 导出包列表不含 `.cache`、safetensors、token 或模型权重。
 
 ### 失败分支
 
 1. 报告命令退出 5：quality/perf 尚未完成，回阶段 11 恢复同一 run。
-2. capacity 与理论偏差超过 10%：保留 server log，解释 page/block 对齐与 runtime reserve；不要改预算重跑出“好看”数值。
+2. capacity 与理论偏差超过 10%：查看报告“理论容量与运行时证据”；只有 server log 中实际 page/block 信息才能解释对齐与 runtime reserve。若证据不足，报告会把证据门禁标为未通过；不要改预算重跑出“好看”数值。
 3. Auto-4 不胜随机：保留负结果，面试按 interview guide 的负结果版本讲；可选择 full 检查 coarse-to-fine 漏层假设。
 4. CSV/SVG 缺失或为空：报告不完整，不导出；重新运行 report 并检查错误。
 
@@ -856,6 +932,7 @@ full 有独立 dataset hash 和 run ID，但必须复用同一个已锁镜像 di
 - [vLLM：旧 NVIDIA driver 的官方 Docker CUDA compatibility 模式](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/)
 - [vLLM：CUDA/PTX 兼容问题排查](https://docs.vllm.ai/en/stable/usage/troubleshooting/)
 - [NVIDIA：CUDA forward compatibility 支持矩阵](https://docs.nvidia.com/deploy/cuda-compatibility/latest/forward-compatibility.html)
+- [NVIDIA：`nvidia-smi dmon` 设备监控参数](https://docs.nvidia.com/deploy/nvidia-smi/index.html#device-monitoring)
 - [NVIDIA Container Toolkit 安装与 Docker 配置](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 - [Docker Engine 官方安装入口](https://docs.docker.com/engine/install/)
 

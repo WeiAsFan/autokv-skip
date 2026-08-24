@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -37,14 +39,53 @@ QUALITY_MODES = frozenset(("auto", "nll", "edit_distance"))
 MAX_TIMEOUT_RESTARTS = 2
 
 
+def archive_exact_artifacts(
+    project_root: Path,
+    run_id: str,
+    phase: str,
+    config_id: str,
+    paths: Sequence[Path],
+) -> Path | None:
+    """Move one explicitly forced configuration to a recoverable evidence folder."""
+    for label, value in (("run_id", run_id), ("phase", phase)):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            raise ValueError(f"{label} contains unsafe characters")
+    if not re.fullmatch(r"[0-9a-f]{12}", config_id):
+        raise ValueError("force config ID must be 12 lowercase hex characters")
+    existing = [ensure_within(project_root, path) for path in paths if path.exists()]
+    if not existing:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    destination = ensure_within(
+        project_root,
+        project_root
+        / "runs"
+        / run_id
+        / "_superseded"
+        / f"{stamp}-{phase}-{config_id}-{time.time_ns()}",
+    )
+    destination.mkdir(parents=True, exist_ok=False)
+    for source in existing:
+        target = ensure_within(project_root, destination / source.name)
+        source.replace(target)
+    return destination
+
+
 def canonical_run_id(
     profile_hash: str,
     image_digest: str,
     model_revision: str,
     dataset_hash: str,
+    source_tree_hash: str,
 ) -> str:
     raw = "\n".join(
-        (profile_hash, image_digest, model_revision, dataset_hash)
+        (
+            profile_hash,
+            image_digest,
+            model_revision,
+            dataset_hash,
+            source_tree_hash,
+        )
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
@@ -81,15 +122,100 @@ def is_complete(state_path: Path, artifact: Path, expected_rows: int) -> bool:
         return False
 
 
-def validate_server_log(log: str, variant: Variant) -> None:
+def validate_container_command(output: str, variant: Variant) -> None:
+    try:
+        command = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ValueError("container inspect command is not valid JSON") from exc
+    if not isinstance(command, list) or any(not isinstance(item, str) for item in command):
+        raise ValueError("container inspect command must be a string array")
+
+    def exact_value(flag: str) -> str:
+        indices = [index for index, item in enumerate(command) if item == flag]
+        if len(indices) != 1 or indices[0] + 1 >= len(command):
+            raise ValueError(f"container command must contain exactly one {flag}")
+        return command[indices[0] + 1]
+
+    if exact_value("--attention-backend") != "FLASHINFER":
+        raise ValueError("container command does not use FLASHINFER")
+    if exact_value("--kv-cache-dtype") != variant.kv_dtype:
+        raise ValueError("container command KV dtype differs from the variant")
+    scale_count = command.count("--calculate-kv-scales")
+    expected_scale_count = int(variant.kv_dtype == "fp8_e4m3")
+    if scale_count != expected_scale_count:
+        raise ValueError("container command has the wrong KV scale mode")
+
+    flag = "--kv-cache-dtype-skip-layers"
+    if flag in command:
+        if command.count(flag) != 1:
+            raise ValueError("container command repeats skip layers")
+        start = command.index(flag) + 1
+        end = start
+        while end < len(command) and not command[end].startswith("--"):
+            end += 1
+        try:
+            observed_layers = tuple(int(value) for value in command[start:end])
+        except ValueError as exc:
+            raise ValueError("container command has non-integer skip layers") from exc
+    else:
+        observed_layers = ()
+    if observed_layers != variant.skip_layers:
+        raise ValueError(
+            "container command skip layers differ from the requested variant"
+        )
+
+
+def inspect_container_command(
+    name: str, variant: Variant, runner: Runner = run_command
+) -> tuple[str, ...]:
+    result = runner(
+        ("docker", "inspect", "--format", "{{json .Config.Cmd}}", name),
+        timeout=30,
+    )
+    if not result.ok:
+        raise RuntimeError(f"cannot inspect actual container command: {name}")
+    validate_container_command(result.stdout, variant)
+    parsed = json.loads(result.stdout)
+    return tuple(parsed)
+
+
+def validate_server_log(log: str, variant: Variant, num_layers: int = 32) -> None:
     upper = log.upper()
     if "FLASHINFER" not in upper:
         raise ValueError("server log does not confirm FLASHINFER")
     if not re.search(r"GPU KV CACHE SIZE:\s*[\d,]+\s*TOKENS", upper):
         raise ValueError("server log does not contain GPU KV cache token capacity")
-    if variant.kv_dtype == "fp8_e4m3":
-        if "FP8" not in upper or "KV CACHE" not in upper:
-            raise ValueError("server log does not confirm FP8 KV cache")
+    fp8_message = "USING FP8_E4M3 DATA TYPE TO STORE KV CACHE"
+    if variant.kv_dtype == "fp8_e4m3" and fp8_message not in upper:
+        raise ValueError("server log does not confirm exact FP8 E4M3 KV cache")
+    if variant.kv_dtype == "bfloat16" and fp8_message in upper:
+        raise ValueError("BF16 server log unexpectedly confirms FP8 E4M3 KV cache")
+    if not variant.skip_layers:
+        return
+    observed: dict[int, str] = {}
+    pattern = re.compile(
+        r"Layer\s+\S*layers\.(\d+)\S*:\s*kv_cache_dtype=([^,\s]+)",
+        flags=re.IGNORECASE,
+    )
+    for layer_text, dtype in pattern.findall(log):
+        layer = int(layer_text)
+        normalized_dtype = dtype.lower()
+        previous = observed.get(layer)
+        if previous is not None and previous != normalized_dtype:
+            raise ValueError(f"conflicting effective KV dtype logs for layer {layer}")
+        observed[layer] = normalized_dtype
+    expected_layers = set(range(num_layers))
+    if set(observed) != expected_layers:
+        raise ValueError(
+            "server log does not expose the effective KV dtype for every layer"
+        )
+    skipped = set(variant.skip_layers)
+    for layer in range(num_layers):
+        expected = "auto" if layer in skipped else "fp8_e4m3"
+        if observed[layer] != expected:
+            raise ValueError(
+                f"layer {layer} effective KV dtype is {observed[layer]}, expected {expected}"
+            )
 
 
 def safe_stop_container(name: str, runner: Runner = run_command) -> None:
@@ -113,8 +239,7 @@ def safe_stop_container(name: str, runner: Runner = run_command) -> None:
         raise RuntimeError(f"failed to remove stopped AutoKV-Skip container: {name}")
 
 
-def safe_remove_stale_container(name: str, runner: Runner = run_command) -> None:
-    """Remove only an exited container that is provably owned by this project."""
+def _owned_container_running(name: str, runner: Runner) -> bool | None:
     inspect_argv = (
         "docker",
         "inspect",
@@ -124,23 +249,45 @@ def safe_remove_stale_container(name: str, runner: Runner = run_command) -> None
     )
     inspected = runner(inspect_argv, timeout=30)
     if not inspected.ok:
-        return
+        return None
     fields = inspected.stdout.strip().split("|")
     if len(fields) != 2:
         raise RuntimeError(f"cannot parse existing container ownership/state: {name}")
     project, running = fields
     if project != "autokv-skip":
         raise RuntimeError(f"refusing to remove foreign container: {name}")
-    if running == "true":
+    if running not in {"true", "false"}:
+        raise RuntimeError(f"cannot determine existing container state: {name}")
+    return running == "true"
+
+
+def safe_remove_stale_container(name: str, runner: Runner = run_command) -> None:
+    """Remove only an exited container that is provably owned by this project."""
+    running = _owned_container_running(name, runner)
+    if running is None:
+        return
+    if running:
         raise RuntimeError(
             f"AutoKV-Skip container is already running: {name}; "
             "stop the concurrent/stale run explicitly before retrying"
         )
-    if running != "false":
-        raise RuntimeError(f"cannot determine existing container state: {name}")
     removed = runner(("docker", "rm", name), timeout=30)
     if not removed.ok:
         raise RuntimeError(f"failed to remove stale AutoKV-Skip container: {name}")
+
+
+def safe_cleanup_owned_container(name: str, runner: Runner = run_command) -> None:
+    """Stop/remove an exact owned container after this process timed it out."""
+    running = _owned_container_running(name, runner)
+    if running is None:
+        return
+    if running:
+        stopped = runner(("docker", "stop", "--time", "30", name), timeout=60)
+        if not stopped.ok:
+            raise RuntimeError(f"failed to stop timed-out AutoKV container: {name}")
+    removed = runner(("docker", "rm", name), timeout=30)
+    if not removed.ok:
+        raise RuntimeError(f"failed to remove timed-out AutoKV container: {name}")
 
 
 def _completion_text(response: Mapping[str, Any]) -> str:
@@ -163,6 +310,7 @@ class ExperimentRunner:
         command_runner: Runner = run_command,
         client_factory: ClientFactory | None = None,
         quality_mode: str = "auto",
+        force_config_id: str | None = None,
     ) -> None:
         self.profile = profile
         self.project_root = project_root.resolve()
@@ -174,9 +322,19 @@ class ExperimentRunner:
         if quality_mode not in QUALITY_MODES:
             raise ValueError(f"quality_mode must be one of {sorted(QUALITY_MODES)}")
         self.quality_mode = quality_mode
+        if force_config_id is not None and not re.fullmatch(
+            r"[0-9a-f]{12}", force_config_id
+        ):
+            raise ValueError("force config ID must be 12 lowercase hex characters")
+        self.force_config_id = force_config_id
+        self._forced_keys: set[tuple[str, str, str]] = set()
         for key in ("image_ref", "image_digest", "model_revision"):
             if not isinstance(lock.get(key), str) or not lock[key]:
                 raise ValueError(f"environment lock is missing {key}")
+
+    @property
+    def force_applied(self) -> bool:
+        return bool(self._forced_keys)
 
     def _paths(
         self, run_id: str, phase: str, variant: Variant
@@ -216,6 +374,79 @@ class ExperimentRunner:
             raise ValueError(
                 f"artifact quality mode differs from locked {self.quality_mode}: {artifact}"
             )
+
+    def _validate_existing_rows(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        artifact: Path,
+        variant: Variant,
+        cases: Sequence[NiahCase],
+        run_id: str,
+    ) -> None:
+        self._validate_quality_modes(rows, artifact)
+        case_by_id = {case.sample_id: case for case in cases}
+        expected_context = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "config_id": canonical_config_id(variant),
+            "image_digest": self.lock["image_digest"],
+            "model_revision": self.lock["model_revision"],
+            "backend": self.profile.model.attention_backend,
+            "kv_dtype": variant.kv_dtype,
+            "skip_layers": list(variant.skip_layers),
+        }
+        seen: set[str] = set()
+        for row in rows:
+            sample_id = row.get("sample_id")
+            if not isinstance(sample_id, str) or sample_id not in case_by_id:
+                raise ValueError(f"artifact contains unexpected sample ID: {artifact}")
+            if sample_id in seen:
+                raise ValueError(f"partial artifact has duplicate sample IDs: {artifact}")
+            seen.add(sample_id)
+            for key, expected in expected_context.items():
+                if row.get(key) != expected:
+                    raise ValueError(
+                        f"artifact context mismatch for {key}: {artifact}"
+                    )
+            case = case_by_id[sample_id]
+            if row.get("seed") != case.seed or row.get("expected") != expected_answer(
+                case.code
+            ):
+                raise ValueError(f"artifact context mismatch for sample: {artifact}")
+            if not isinstance(row.get("output_text"), str):
+                raise ValueError(f"artifact row has invalid output_text: {artifact}")
+            for key in ("prompt_tokens", "edit_distance"):
+                value = row.get(key)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValueError(f"artifact row has invalid {key}: {artifact}")
+            output_tokens = row.get("output_tokens")
+            if output_tokens is not None and (
+                not isinstance(output_tokens, int)
+                or isinstance(output_tokens, bool)
+                or output_tokens < 0
+            ):
+                raise ValueError(f"artifact row has invalid output_tokens: {artifact}")
+            for key in ("needle_depth", "exact_match", "quality_score", "e2e_ms"):
+                value = row.get(key)
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(float(value))
+                ):
+                    raise ValueError(f"artifact row has invalid {key}: {artifact}")
+            if not 0.0 <= float(row["needle_depth"]) <= 1.0:
+                raise ValueError(f"artifact row has invalid needle_depth: {artifact}")
+            if float(row["exact_match"]) not in {0.0, 1.0}:
+                raise ValueError(f"artifact row has invalid exact_match: {artifact}")
+            answer_nll = row.get("answer_nll")
+            if answer_nll is not None and (
+                not isinstance(answer_nll, (int, float))
+                or isinstance(answer_nll, bool)
+                or not math.isfinite(float(answer_nll))
+            ):
+                raise ValueError(f"artifact row has invalid answer_nll: {artifact}")
+            if not isinstance(row.get("timestamp_utc"), str):
+                raise ValueError(f"artifact row has invalid timestamp_utc: {artifact}")
 
     @staticmethod
     def _is_timeout(exc: BaseException) -> bool:
@@ -263,19 +494,38 @@ class ExperimentRunner:
         artifact, state_path, log_path, command_path = self._paths(
             run_id, phase, variant
         )
+        config_id = canonical_config_id(variant)
+        force_key = (run_id, phase, config_id)
+        if self.force_config_id == config_id and force_key not in self._forced_keys:
+            archive_exact_artifacts(
+                self.project_root,
+                run_id,
+                phase,
+                config_id,
+                (artifact, state_path, log_path, command_path),
+            )
+            self._forced_keys.add(force_key)
         expected_rows = len(cases)
-        if is_complete(state_path, artifact, expected_rows):
-            self._validate_quality_modes(read_jsonl(artifact), artifact)
+        complete = is_complete(state_path, artifact, expected_rows)
+        if state_path.exists() and not complete:
+            raise ValueError(
+                f"completed state integrity mismatch; preserve evidence and use "
+                f"--force {canonical_config_id(variant)}: {state_path}"
+            )
+        if complete:
+            self._validate_existing_rows(
+                read_jsonl(artifact), artifact, variant, cases, run_id
+            )
             return artifact
 
         existing_rows = read_jsonl(artifact) if artifact.exists() else []
-        self._validate_quality_modes(existing_rows, artifact)
+        self._validate_existing_rows(
+            existing_rows, artifact, variant, cases, run_id
+        )
         active_quality_mode = self.quality_mode
         if active_quality_mode == "auto" and existing_rows:
             active_quality_mode = str(existing_rows[0]["quality_mode"])
         completed_ids = {row.get("sample_id") for row in existing_rows}
-        if len(completed_ids) != len(existing_rows):
-            raise ValueError(f"partial artifact has duplicate sample IDs: {artifact}")
         expected_ids = {case.sample_id for case in cases}
         if not completed_ids.issubset(expected_ids):
             raise ValueError(f"partial artifact contains unexpected sample IDs: {artifact}")
@@ -291,20 +541,18 @@ class ExperimentRunner:
             run_id,
             model_revision,
         )
-        atomic_write_json(
-            command_path,
-            {
-                "argv": list(argv),
-                "variant": {
-                    "name": variant.name,
-                    "kv_dtype": variant.kv_dtype,
-                    "skip_layers": list(variant.skip_layers),
-                },
-                "image_ref": image_ref,
-                "model_revision": model_revision,
-                "quality_mode": self.quality_mode,
+        command_record = {
+            "argv": list(argv),
+            "variant": {
+                "name": variant.name,
+                "kv_dtype": variant.kv_dtype,
+                "skip_layers": list(variant.skip_layers),
             },
-        )
+            "image_ref": image_ref,
+            "model_revision": model_revision,
+            "quality_mode": self.quality_mode,
+        }
+        atomic_write_json(command_path, command_record)
 
         name = container_name(run_id, variant)
         started = False
@@ -322,8 +570,14 @@ class ExperimentRunner:
                 f"http://127.0.0.1:{port}", self.profile.model.model_id
             )
             wait_until_ready(client, timeout_seconds=900, interval_seconds=2)
+            command_record["inspected_argv"] = list(
+                inspect_container_command(name, variant, self.command_runner)
+            )
+            atomic_write_json(command_path, command_record)
             captured_log = self._logs(name)
-            validate_server_log(captured_log, variant)
+            validate_server_log(
+                captured_log, variant, num_layers=self.profile.model.num_layers
+            )
 
             for case in cases:
                 if case.sample_id in completed_ids:

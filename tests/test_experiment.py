@@ -11,16 +11,29 @@ from autokv.experiment import (
     canonical_run_id,
     is_complete,
     mark_complete,
+    safe_cleanup_owned_container,
     safe_remove_stale_container,
     safe_stop_container,
+    validate_container_command,
     validate_server_log,
 )
 from autokv.niah import NiahCase, expected_answer
-from autokv.selection import Variant
+from autokv.selection import Variant, canonical_config_id
 
 
 def _result(argv, returncode=0, stdout="", stderr=""):
     return CommandResult(tuple(argv), returncode, stdout, stderr, 0.01)
+
+
+FP8_CONTAINER_COMMAND = json.dumps(
+    [
+        "--attention-backend",
+        "FLASHINFER",
+        "--kv-cache-dtype",
+        "fp8_e4m3",
+        "--calculate-kv-scales",
+    ]
+)
 
 
 class ExperimentTests(unittest.TestCase):
@@ -35,9 +48,19 @@ class ExperimentTests(unittest.TestCase):
             self.assertFalse(is_complete(root / "state.json", artifact, expected_rows=1))
 
     def test_run_id_is_deterministic_and_sensitive_to_image(self):
-        first = canonical_run_id("profile", "sha256:a", "model", "data")
-        self.assertEqual(first, canonical_run_id("profile", "sha256:a", "model", "data"))
-        self.assertNotEqual(first, canonical_run_id("profile", "sha256:b", "model", "data"))
+        first = canonical_run_id("profile", "sha256:a", "model", "data", "source-a")
+        self.assertEqual(
+            first,
+            canonical_run_id("profile", "sha256:a", "model", "data", "source-a"),
+        )
+        self.assertNotEqual(
+            first,
+            canonical_run_id("profile", "sha256:b", "model", "data", "source-a"),
+        )
+        self.assertNotEqual(
+            first,
+            canonical_run_id("profile", "sha256:a", "model", "data", "source-b"),
+        )
 
     def test_server_log_requires_flashinfer_dtype_and_capacity(self):
         log = (
@@ -48,6 +71,74 @@ class ExperimentTests(unittest.TestCase):
         validate_server_log(log, Variant.fp8())
         with self.assertRaisesRegex(ValueError, "FLASHINFER"):
             validate_server_log(log.replace("FLASHINFER", "FLASH_ATTN"), Variant.fp8())
+        bf16_log = (
+            "Using AttentionBackendEnum.FLASHINFER backend.\n"
+            "GPU KV cache size: 131,072 tokens\n"
+        )
+        validate_server_log(bf16_log, Variant.bf16())
+        with self.assertRaisesRegex(ValueError, "unexpectedly confirms FP8"):
+            validate_server_log(log, Variant.bf16())
+
+    def test_mixed_server_log_proves_every_effective_layer_dtype(self):
+        skipped = (2, 7, 18, 29)
+        layer_lines = "\n".join(
+            "Layer model.layers."
+            f"{layer}.self_attn: kv_cache_dtype="
+            f"{'auto' if layer in skipped else 'fp8_e4m3'}, sliding_window=None"
+            for layer in range(32)
+        )
+        log = (
+            "Using AttentionBackendEnum.FLASHINFER backend.\n"
+            "Using fp8_e4m3 data type to store kv cache.\n"
+            "GPU KV cache size: 233,104 tokens\n"
+            + layer_lines
+        )
+        variant = Variant.mixed("auto-4", skipped)
+
+        validate_server_log(log, variant, num_layers=32)
+        with self.assertRaisesRegex(ValueError, "effective KV dtype"):
+            validate_server_log(
+                log.replace(
+                    "Layer model.layers.7.self_attn: kv_cache_dtype=auto",
+                    "Layer model.layers.7.self_attn: kv_cache_dtype=fp8_e4m3",
+                ),
+                variant,
+                num_layers=32,
+            )
+
+    def test_container_command_requires_exact_dtype_backend_and_skip_layers(self):
+        variant = Variant.mixed("auto-4", (2, 7, 18, 29))
+        command = json.dumps(
+            [
+                "--attention-backend",
+                "FLASHINFER",
+                "--kv-cache-dtype",
+                "fp8_e4m3",
+                "--calculate-kv-scales",
+                "--kv-cache-dtype-skip-layers",
+                "2",
+                "7",
+                "18",
+                "29",
+                "--host",
+                "0.0.0.0",
+            ]
+        )
+        validate_container_command(command, variant)
+
+        with self.assertRaisesRegex(ValueError, "skip layers"):
+            validate_container_command(command.replace('"29"', '"28"'), variant)
+        validate_container_command(
+            json.dumps(
+                [
+                    "--attention-backend",
+                    "FLASHINFER",
+                    "--kv-cache-dtype",
+                    "bfloat16",
+                ]
+            ),
+            Variant.bf16(),
+        )
 
     def test_safe_stop_refuses_foreign_container(self):
         calls = []
@@ -82,6 +173,23 @@ class ExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "already running"):
             safe_remove_stale_container("autokv-test", runner)
 
+    def test_safe_cleanup_owned_container_stops_and_removes_exact_container(self):
+        calls = []
+
+        def runner(argv, timeout=None):
+            calls.append(tuple(argv))
+            if tuple(argv[:2]) == ("docker", "inspect"):
+                return _result(argv, stdout="autokv-skip|true\n")
+            return _result(argv)
+
+        safe_cleanup_owned_container("autokv-bench-deadbeef0000", runner)
+
+        self.assertIn(
+            ("docker", "stop", "--time", "30", "autokv-bench-deadbeef0000"),
+            calls,
+        )
+        self.assertIn(("docker", "rm", "autokv-bench-deadbeef0000"), calls)
+
     def test_fake_variant_run_writes_scored_resumable_result(self):
         profile = Profile.from_dict(Profile.default_dict("quick"))
         log = (
@@ -96,6 +204,8 @@ class ExperimentTests(unittest.TestCase):
             if tuple(argv[:2]) == ("docker", "logs"):
                 return _result(argv, stdout=log)
             if tuple(argv[:2]) == ("docker", "inspect"):
+                if "{{json .Config.Cmd}}" in argv:
+                    return _result(argv, stdout=FP8_CONTAINER_COMMAND)
                 if "State.Running" in " ".join(argv):
                     return _result(argv, returncode=1, stderr="No such object")
                 return _result(argv, stdout="autokv-skip\n")
@@ -143,6 +253,57 @@ class ExperimentTests(unittest.TestCase):
             )
             self.assertIn('"exact_match":1.0', artifact.read_text(encoding="utf-8"))
 
+            state_path = artifact.with_suffix(".state.json")
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["artifact_sha256"] = "f" * 64
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "state integrity"):
+                experiment.run_variant(
+                    Variant.fp8(),
+                    (case,),
+                    phase="probe",
+                    run_id="run1",
+                    port=8000,
+                )
+
+            state_path.unlink()
+            row = json.loads(artifact.read_text(encoding="utf-8"))
+            row["kv_dtype"] = "bfloat16"
+            artifact.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "context mismatch"):
+                experiment.run_variant(
+                    Variant.fp8(),
+                    (case,),
+                    phase="probe",
+                    run_id="run1",
+                    port=8000,
+                )
+
+            forced = ExperimentRunner(
+                profile,
+                root,
+                lock,
+                command_runner=runner,
+                client_factory=lambda base_url, model_id: FakeClient(),
+                force_config_id=canonical_config_id(Variant.fp8()),
+            )
+            replacement = forced.run_variant(
+                Variant.fp8(),
+                (case,),
+                phase="probe",
+                run_id="run1",
+                port=8000,
+            )
+            self.assertTrue(
+                is_complete(replacement.with_suffix(".state.json"), replacement, 1)
+            )
+            self.assertTrue(
+                any(
+                    path.suffix == ".jsonl"
+                    for path in (root / "runs/run1/_superseded").rglob("*")
+                )
+            )
+
     def test_request_timeout_restarts_the_exact_configuration_twice_at_most(self):
         profile = Profile.from_dict(Profile.default_dict("quick"))
         log = (
@@ -159,6 +320,8 @@ class ExperimentTests(unittest.TestCase):
             if tuple(argv[:2]) == ("docker", "logs"):
                 return _result(argv, stdout=log)
             if tuple(argv[:2]) == ("docker", "inspect"):
+                if "{{json .Config.Cmd}}" in argv:
+                    return _result(argv, stdout=FP8_CONTAINER_COMMAND)
                 if "State.Running" in " ".join(argv):
                     return _result(argv, returncode=1, stderr="No such object")
                 return _result(argv, stdout="autokv-skip\n")
@@ -230,6 +393,8 @@ class ExperimentTests(unittest.TestCase):
             if tuple(argv[:2]) == ("docker", "logs"):
                 return _result(argv, stdout=log)
             if tuple(argv[:2]) == ("docker", "inspect"):
+                if "{{json .Config.Cmd}}" in argv:
+                    return _result(argv, stdout=FP8_CONTAINER_COMMAND)
                 if "State.Running" in " ".join(argv):
                     return _result(argv, returncode=1, stderr="No such object")
                 return _result(argv, stdout="autokv-skip\n")

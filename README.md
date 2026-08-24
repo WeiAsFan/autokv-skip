@@ -8,9 +8,9 @@ AutoKV-Skip 是一个面向单张 NVIDIA RTX A6000 48 GiB 的小型 vLLM 推理�
 2. 用 NIAH 长上下文召回任务估计层敏感度；
 3. quick 模式以 coarse-to-fine 搜索把核心配置从 34 个减到 18 个；
 4. 与 BF16、全 FP8、5 个 Random-4、First-4、Last-4、Inverted-4 公平对比；
-5. 输出质量、KV token capacity、吞吐、TTFT、CSV 和 SVG 报告。
+5. 按相同输入/输出长度输出质量、KV token capacity、吞吐、TTFT、`nvidia-smi dmon` 遥测、CSV 和 SVG 报告。
 
-正式流程还会在双启动 smoke 中全局锁定 NLL 或编辑距离评分模式；Docker pull 最多指数退避尝试 3 次，请求超时只重启同一配置且最多 2 次，避免瞬时故障改变实验条件。
+正式流程还会在双启动 smoke 中全局锁定 NLL 或编辑距离评分模式；Docker pull 最多指数退避尝试 3 次，请求超时只重启同一配置且最多 2 次，避免瞬时故障改变实验条件。每次 server 启动后还会核对 Docker 中的实际 argv，并在 DEBUG 日志里逐层证明 Auto-4 的 4 层为原生 KV dtype、其余 28 层为 `fp8_e4m3`，而不是只相信传入参数。
 
 ## 冻结实验
 
@@ -66,7 +66,9 @@ python3 -m autokv smoke --profile quick --json
 python3 -m autokv run --profile quick --json
 ```
 
-`run` 可断点续跑。完成且 SHA-256、行数和状态文件一致的配置不会重跑；它只会管理带有 `io.autokv.project=autokv-skip` label 的精确容器。主机重启留下的同名 `Exited` 容器会在核验 label 后自动移除；同名容器仍运行或属于其他项目时则拒绝操作。
+`run` 可断点续跑。完成且 SHA-256、行数、上下文和状态文件一致的配置不会重跑；它只会管理带有 `io.autokv.project=autokv-skip` label 的精确容器。benchmark 客户端也有由目标结果路径生成的唯一容器名，超时后只清理这一客户端。主机重启留下的同名 `Exited` 容器会在核验 label 后自动移除；同名容器仍运行或属于其他项目时则拒绝操作。
+
+若某个产物被手工改坏，控制器不会“洗白”它。先保留诊断，再从命令记录文件名取得 12 位配置 ID，仅对相应阶段执行 `--force CONFIG_ID`；旧证据会移动到可恢复的 `_superseded/`，不会删除。完整命令见运行手册阶段 11。
 
 ## 产物
 
@@ -75,11 +77,14 @@ configs/                         冻结 quick/full profiles
 data/niah/                       确定性 NIAH 规格与 dataset hash
 runs/_environment/doctor.json   宿主与容器 gate 证据
 runs/_environment/lock.json     镜像 RepoDigest、模型 revision、版本锁
+runs/<run-id>/run-manifest.json profile/data/image/model/源码树 SHA-256 与 Git 身份
 runs/<run-id>/probe/             组/层敏感度原始 JSONL
 runs/<run-id>/selection.json     Auto/随机/首尾/反向层集合
 runs/<run-id>/quality/           11 个配置的最终质量原始 JSONL
-runs/<run-id>/perf/              3 个主配置的容量与 vllm bench 原始 JSON
-runs/<run-id>/report/            中文 Markdown、CSV、SVG
+runs/<run-id>/perf/              3 个主配置的容量、vllm bench JSON 与 dmon 日志
+runs/<run-id>/report/            中文 Markdown、总表 CSV、逐场景 CSV、SVG
+runs/<run-id>/completed-manifest.json 全部活跃 run 产物的最终哈希清单
+runs/<run-id>/_superseded/       `--force` 前移入的可恢复旧证据
 runs/_diagnostics/               脱敏诊断包；不含模型和 HF cache
 ```
 

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from autokv.cli import _completion_manifest_is_valid, _write_completion_manifest
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,6 +24,27 @@ def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 class CliTests(unittest.TestCase):
+    def test_completion_manifest_hashes_every_active_run_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "runs" / "run-one"
+            run_root.mkdir(parents=True)
+            artifact = run_root / "artifact.json"
+            artifact.write_text('{"ok":true}\n', encoding="utf-8")
+
+            manifest_path = _write_completion_manifest(
+                root, "run-one", "a" * 64
+            )
+
+            self.assertTrue(manifest_path.is_file())
+            self.assertTrue(_completion_manifest_is_valid(root, "run-one"))
+            artifact.write_text('{"ok":false}\n', encoding="utf-8")
+            self.assertFalse(_completion_manifest_is_valid(root, "run-one"))
+            artifact.write_text('{"ok":true}\n', encoding="utf-8")
+            self.assertTrue(_completion_manifest_is_valid(root, "run-one"))
+            (run_root / "unlisted.json").write_text("{}\n", encoding="utf-8")
+            self.assertFalse(_completion_manifest_is_valid(root, "run-one"))
+
     def test_help_lists_complete_server_workflow(self):
         result = run_cli("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -41,6 +64,9 @@ class CliTests(unittest.TestCase):
             "diagnose",
         ):
             self.assertIn(command, result.stdout)
+        probe_help = run_cli("probe", "--help")
+        self.assertEqual(probe_help.returncode, 0, probe_help.stderr)
+        self.assertIn("--force", probe_help.stdout)
 
     def test_quick_dry_run_is_json_and_never_invokes_docker(self):
         result = run_cli("dry-run", "--profile", "quick", "--json")
@@ -139,7 +165,9 @@ class CliTests(unittest.TestCase):
             environment = root / "runs" / "_environment"
             environment.mkdir(parents=True)
             (environment / "doctor.json").write_text(
-                '{"message":"token super-secret-token"}\n', encoding="utf-8"
+                '{"message":"token super-secret-token '
+                'https://example.test/file?X-Amz-Signature=signed-secret&part=1"}\n',
+                encoding="utf-8",
             )
             cache = root / ".cache" / "huggingface"
             cache.mkdir(parents=True)
@@ -171,6 +199,7 @@ class CliTests(unittest.TestCase):
                 doctor_member = next(name for name in names if name.endswith("doctor.json"))
                 body = handle.extractfile(doctor_member).read().decode("utf-8")
                 self.assertNotIn("super-secret-token", body)
+                self.assertNotIn("signed-secret", body)
                 self.assertIn("***", body)
 
     def test_real_gpu_command_refuses_non_linux_host(self):
@@ -278,6 +307,7 @@ class CliTests(unittest.TestCase):
                     {
                         "complete": True,
                         "deterministic": True,
+                        "run_id": run_id,
                         "quality_mode": "edit_distance",
                         "first": smoke_records[0],
                         "second": smoke_records[1],
@@ -308,14 +338,22 @@ class CliTests(unittest.TestCase):
                 }
 
             add_artifact("fp8", 0.2)
+            group_scores = {}
+            for group in range(8):
+                quality = 0.21 + group / 100
+                add_artifact(f"group-{group:02d}", quality)
+                group_scores[f"group-{group:02d}"] = quality - 0.2
             for layer in range(8):
                 add_artifact(f"layer-{layer:02d}", 0.2 + layer / 100)
+            add_artifact("auto-4", 0.5)
             (probe_dir / "index.json").write_text(
                 json.dumps(
                     {
                         "complete": True,
+                        "run_id": run_id,
                         "dataset_hash": made_payload["dataset_hash"],
                         "quality_mode": "edit_distance",
+                        "group_scores": group_scores,
                         "candidate_layers": list(range(8)),
                         "auto_layers": [4, 5, 6, 7],
                         "artifacts": artifacts,
@@ -339,6 +377,55 @@ class CliTests(unittest.TestCase):
             controls = [tuple(layers) for layers in payload["random_layers"]]
             self.assertEqual(len(set(controls)), 5)
             self.assertNotIn((4, 5, 6, 7), controls)
+            run_manifest = json.loads(
+                (root / "runs" / run_id / "run-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(run_manifest["run_id"], run_id)
+            self.assertRegex(run_manifest["source"]["tree_sha256"], r"^[0-9a-f]{64}$")
+            self.assertIn("git_commit", run_manifest["source"])
+            self.assertEqual(
+                run_manifest["profile_sha256"],
+                json.loads(
+                    (root / "data/niah/quick-manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["profile_sha256"],
+            )
+            self.assertEqual(run_manifest["storage_timezone"], "UTC")
+            self.assertEqual(run_manifest["display_timezone"], "Asia/Shanghai")
+
+            valid_status = run_cli(
+                "status",
+                "--project-root",
+                str(root),
+                "--profile",
+                "quick",
+                "--json",
+            )
+            self.assertEqual(valid_status.returncode, 0, valid_status.stderr)
+            valid_steps = json.loads(valid_status.stdout)["steps"]
+            self.assertTrue(valid_steps["smoke"])
+            self.assertTrue(valid_steps["probe"])
+            self.assertTrue(valid_steps["select"])
+
+            (probe_dir / "layer-00.jsonl").write_text(
+                "corrupted\n", encoding="utf-8"
+            )
+            invalid_status = run_cli(
+                "status",
+                "--project-root",
+                str(root),
+                "--profile",
+                "quick",
+                "--json",
+            )
+            self.assertEqual(invalid_status.returncode, 0, invalid_status.stderr)
+            invalid_steps = json.loads(invalid_status.stdout)["steps"]
+            self.assertTrue(invalid_steps["smoke"])
+            self.assertFalse(invalid_steps["probe"])
+            self.assertFalse(invalid_steps["select"])
 
 
 if __name__ == "__main__":
