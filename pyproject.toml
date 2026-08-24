@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autokv-skip"
+version = "0.1.0"
+description = "Driver-locked AutoKV-Skip experiment controller for vLLM"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+autokv = "autokv.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autokv*"]
