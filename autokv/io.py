@@ -36,6 +36,23 @@ def atomic_write_json(path: Path, data: Any) -> None:
         raise
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def append_jsonl(path: Path, row: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True)

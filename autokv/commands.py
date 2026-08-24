@@ -144,7 +144,6 @@ def server_command(
         "docker",
         "run",
         "-d",
-        "--rm",
         "--name",
         container_name(run_id, variant),
         "--label",

@@ -36,6 +36,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("--kv-cache-dtype-skip-layers 2 7 18 29", joined)
         self.assertIn(f"--revision {'a' * 40}", joined)
         self.assertNotIn("--privileged", argv)
+        self.assertNotIn("--rm", argv)
         self.assertNotIn("/usr/local/cuda", joined)
         self.assertNotIn("nvidia-driver", joined.lower())
 

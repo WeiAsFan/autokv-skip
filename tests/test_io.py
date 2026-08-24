@@ -5,6 +5,7 @@ from pathlib import Path
 from autokv.io import (
     append_jsonl,
     atomic_write_json,
+    atomic_write_text,
     ensure_within,
     read_json,
     read_jsonl,
@@ -40,6 +41,12 @@ class IoTests(unittest.TestCase):
             append_jsonl(path, {"row": 1})
             append_jsonl(path, {"row": 2})
             self.assertEqual(read_jsonl(path), [{"row": 1}, {"row": 2}])
+
+    def test_atomic_text_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            atomic_write_text(path, "line 1\nline 2\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), "line 1\nline 2\n")
 
     def test_redacts_each_nonempty_secret(self):
         value = "Authorization: abc123; token=xyz"
