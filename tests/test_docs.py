@@ -100,11 +100,13 @@ class DocumentationTests(unittest.TestCase):
         for nonexistent in ("capacity.csv", "quality.csv", "performance.csv"):
             self.assertNotIn(f"从 {nonexistent} 读取", text)
 
-    def test_readme_distinguishes_local_verification_from_server_validation(self):
+    def test_readme_records_current_run_and_reproducibility_limit(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("本地代码验证", text)
-        self.assertIn("目标服务器尚未验证", text)
-        self.assertIn("python scripts/verify.py", text)
+        self.assertIn("8181c9a332ef6e9c", text)
+        self.assertIn("580.173.02", text)
+        self.assertIn("运行源码提交", text)
+        self.assertIn("尚未发布到 GitHub", text)
+        self.assertIn("v1.0 统一项目事实", text)
 
 
 if __name__ == "__main__":

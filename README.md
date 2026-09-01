@@ -1,107 +1,63 @@
 # AutoKV-Skip
 
-AutoKV-Skip 是一个面向单张 NVIDIA RTX A6000 48 GiB 的小型 vLLM 推理优化项目。它不改 vLLM/CUDA 内核，也不量化模型权重；它利用 vLLM 已有的逐层 KV Cache 量化跳过参数，自动挑出 4 个对 FP8 KV 量化更敏感的层保留 BF16，其余 28 层使用 FP8 E4M3。
+AutoKV-Skip 是一个面向 AI 算法工程师面试的小型 vLLM 推理优化项目。它不修改 vLLM/CUDA 内核，也不量化模型权重；v1.0 使用 vLLM 的逐层 KV Cache dtype 跳过能力，自动选择 4 层保留 BF16 KV，其余 28 层使用 FP8 E4M3，并用质量、KV 容量和 serving 性能实验检验这一策略是否成立。
 
-项目的目标不是声称首创混合精度 KV 算法，而是用少量标准库 Python 代码完成一个面试中可讲清、服务器上可复现、结果可能为负也仍然有效的算法—系统闭环：
+项目追求的是一个可证伪的算法—系统闭环，而不是预设 Auto-4 必须胜出。当前权威口径见 [v1.0 统一项目事实](docs/v1.0/FACTS.zh-CN.md)；运行前文档与它冲突时，以原始运行产物和该事实页为准。
 
-1. 固定驱动、镜像 digest、模型 revision、数据 hash 和随机种子；
-2. 用 NIAH 长上下文召回任务估计层敏感度；
-3. quick 模式以 coarse-to-fine 搜索把核心配置从 34 个减到 18 个；
-4. 与 BF16、全 FP8、5 个 Random-4、First-4、Last-4、Inverted-4 公平对比；
-5. 按相同输入/输出长度输出质量、KV token capacity、吞吐、TTFT、`nvidia-smi dmon` 遥测、CSV 和 SVG 报告。
+## v1.0 当前结论
 
-正式流程还会在双启动 smoke 中全局锁定 NLL 或编辑距离评分模式；Docker pull 最多指数退避尝试 3 次，请求超时只重启同一配置且最多 2 次，避免瞬时故障改变实验条件。每次 server 启动后还会核对 Docker 中的实际 argv，并在 DEBUG 日志里逐层证明 Auto-4 的 4 层为原生 KV dtype、其余 28 层为 `fp8_e4m3`，而不是只相信传入参数。
+修复后的 full 运行 `8181c9a332ef6e9c` 已完成真实 vLLM/GPU 验证：
 
-## 冻结实验
+- 模型为 `mistralai/Mistral-7B-Instruct-v0.3`，GPU 为 RTX A6000 48 GiB；
+- 运行环境为本地 vLLM Python 环境，驱动 `580.173.02`、CUDA `12.9`、vLLM `0.1.dev19475+gc18d29d36`；
+- BF16、全 FP8、Auto-4 以及 8 个同预算/位置对照均完成 45 个质量样本；
+- Auto-4 选择层为 `[1, 4, 8, 12]`；
+- 三个主配置在 6 组 input/output 长度上各重复 3 次，共完成 2700 个 serving 请求，失败 0 个；
+- 结果归档 SHA-256 和归档内 268 个受清单覆盖的产物哈希均已复核。
 
-| 项目 | 固定值 |
-|---|---|
-| GPU | NVIDIA RTX A6000 48 GiB，SM 8.6 |
-| 宿主驱动 | `535.230.02`，严禁脚本升级、降级或重装 |
-| 框架 | vLLM |
-| 主镜像 | `vllm/vllm-openai:v0.26.0` |
-| 兼容回退 | `vllm/vllm-openai:v0.19.1`，只在 CUDA/feature gate 失败时尝试 |
-| 模型 | `mistralai/Mistral-7B-Instruct-v0.3`，revision 运行时锁为 40 位 commit |
-| 模型计算 | BF16 |
-| 注意力后端 | `FLASHINFER` |
-| KV 预算 | 每配置固定 `16G` |
-| Auto-4 | 4 层 BF16 KV + 28 层 FP8 E4M3 KV |
-| Scale MVP | 固定 seed 的 `--calculate-kv-scales`；两次独立 smoke 必须一致 |
+### 质量与容量摘要
 
-Mistral 的 32 层、8 KV heads、head dimension 128 对应：
+| 配置 | EM | 平均 Q | KV token capacity | 相对 BF16 |
+|---|---:|---:|---:|---:|
+| BF16 | 1.0 | 0.9951674671 | 131072 | 1.0000× |
+| 全 FP8 | 1.0 | 0.9951287091 | 262144 | 2.0000× |
+| Auto-4 | 1.0 | 0.9951613370 | 232992 | 1.777588× |
 
-```text
-BF16 KV = 2(K/V) × 32 × 8 × 128 × 2 bytes = 131072 bytes/token
-FP8  KV = 2(K/V) × 32 × 8 × 128 × 1 byte  =  65536 bytes/token
-Auto-4  = 4 × 4096 + 28 × 2048             =  73728 bytes/token
-Auto-4 理论容量 / BF16 = 131072 / 73728     = 1.7778×
-```
+BF16 与全 FP8 的平均 Q 差只有 `3.8758e-5`，配对 95% CI 为 `[-8.175e-5, 1.548e-4]`，远未达到预注册质量缺口阈值 `0.01`。Auto-4 相对全 FP8 的平均 Q 差为 `3.2628e-5`，置信区间同样跨 0；Auto-4 相对每样本 Random-4 中位数的置信区间也跨 0。
 
-## 当前验证状态
+因此，v1.0 能支持的结论是：
 
-- **本地代码验证**：标准库单元测试、伪 HTTP 服务、伪 Docker 生命周期、恢复状态、命令转义、报告渲染、quick/full dry-run 和静态安全扫描可在无 GPU 的机器完成。
-- **目标服务器尚未验证**：真实 R535 forward compatibility、目标镜像拉取、FlashInfer + FP8、逐层 skip、真实 KV capacity 和 quick 实验数值，必须等能够访问 A6000 服务器后按运行手册执行。
-- 因此，本仓库中的代码通过不等于 GPU 实验已经成功。任何报告数值都只能来自 `runs/<run-id>/` 的真实产物，不能预填或臆造。
-- 质量 NIAH 请求为非流式：原始 JSONL 的 `ttft_ms=null`、`e2e_ms` 为完整请求耗时；TTFT/TPOT/ITL 仅来自 `vllm bench serve` 性能产物。
+- 逐层混合 KV dtype 的部署链路和容量模型已验证；
+- 在当前数据上，全 FP8 与 BF16 的质量不可分辨，没有 Auto-4 可以恢复的质量缺口；
+- Auto-4 提供了符合理论的 1.777588× 容量，但没有证明优于容量更高的全 FP8，也没有证明自动选层优于同预算随机选层；
+- 这是有意义的工程负结果，不能改指标或挑样本把它包装成正结果。
 
-## 从哪里开始
+### 性能结果的限制
 
-首次上服务器时不要直接运行一键实验。逐项执行 [RUNBOOK.zh-CN.md](RUNBOOK.zh-CN.md)，它包含阶段 0–13、每条可复制命令、预计时间、成功判据和失败分支。
+本次 Auto-4 相对 BF16 的请求吞吐变化在 6 个场景中为 `-0.861%` 到 `+19.607%`，相对全 FP8 大多慢约 `1.2%–3.9%`。但是本次运行开启了 prefix caching，最高命中率约 50%，且同一 server 内的后续重复明显受缓存热身影响。因此这些性能数值只作为暂定证据；正式性能结论必须在关闭 prefix caching 后重跑。
 
-先在任意 Python 3.10+ 环境执行本地验证：
+## 可复现性状态
 
-```bash
-python3 scripts/verify.py
-```
+结果已在 GitHub 提交 `096697c647603aaf871f1babf3d2e8b1ceb37c1b` 中归档，但结果 manifest 记录的运行源码提交 `2c6a4e1ac96e9835a6af2ad450cb9dfa269e4953` 尚未发布到 GitHub。当前仓库中的旧源码不能被当成本次运行源码。
 
-在 Windows 本地开发环境也可以运行：`python scripts/verify.py`。
+在满足 [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 前，本项目可以声称结果归档内部可校验，但不能声称第三方已经能够从仓库精确复现该运行。
 
-然后在目标 Linux 服务器按顺序执行的核心入口是：
+## 项目边界
 
-```bash
-python3 -m autokv doctor --profile quick --json
-python3 -m autokv lock-image --profile quick --json
-python3 -m autokv make-data --profile quick --json
-python3 -m autokv dry-run --profile quick --json
-python3 -m autokv smoke --profile quick --json
-python3 -m autokv run --profile quick --json
-```
+- 真实实验不在当前本机执行。操作者先在另一台 Linux 设备上使用 `ssh` 登录小型服务器，再在该服务器上运行项目。
+- 当前本地工作区用于代码、文档和结果分析，不能替代服务器上的 GPU 验证。
+- v1.0 固定输出 Auto-4；“根据质量缺口自动选择混合精度”是 v2.0 的正式方向，不追溯改写 v1.0。
+- 项目不是论文级算法首创，也不是生产级在线服务；其价值是展示 vLLM 部署、KV Cache/量化理解、故障定位、实验设计、性能分析和诚实决策能力。
 
-`run` 可断点续跑。完成且 SHA-256、行数、上下文、实际 command/server log 和状态文件一致的配置不会重跑；selection 每次会从 probe 证据重新推导，benchmark 只有在 matrix state 同时锚定全部 raw JSON 与 dmon 时才复用。控制器只管理带有 `io.autokv.project=autokv-skip` label 的精确容器；即使遥测停止失败或 `docker run -d` 超时，也会先核验所有权再清理。主机重启留下的同名 `Exited` 容器会在核验 label 后自动移除；同名容器仍运行或属于其他项目时则拒绝操作。
+## 文档导航
 
-若某个产物被手工改坏，控制器不会“洗白”它。先保留诊断，再从命令记录文件名取得 12 位配置 ID，仅对相应阶段执行 `--force CONFIG_ID`；旧证据会移动到可恢复的 `_superseded/`，不会删除。完整命令见运行手册阶段 11。
-
-## 产物
-
-```text
-configs/                         冻结 quick/full profiles
-data/niah/                       确定性 NIAH 规格与 dataset hash
-runs/_environment/doctor.json   宿主与容器 gate 证据
-runs/_environment/lock.json     镜像 RepoDigest、模型 revision、版本锁
-runs/<run-id>/run-manifest.json profile/data/image/model/源码树 SHA-256 与 Git 身份
-runs/<run-id>/probe/             组/层敏感度原始 JSONL
-runs/<run-id>/selection.json     Auto/随机/首尾/反向层集合
-runs/<run-id>/quality/           11 个配置的最终质量原始 JSONL
-runs/<run-id>/perf/              3 个主配置的容量、bench JSON、dmon 与 matrix state
-runs/<run-id>/report/            中文 Markdown、总表 CSV、逐场景 CSV、SVG
-runs/<run-id>/completed-manifest.json 全部活跃 run 产物的最终哈希清单
-runs/<run-id>/_superseded/       `--force` 前移入的可恢复旧证据
-runs/_diagnostics/               脱敏诊断包；不含模型和 HF cache
-```
-
-## 阅读路径
-
-- [完整服务器操作手册](RUNBOOK.zh-CN.md)
-- [推理优化技术综述](docs/research/inference-optimization-landscape.zh-CN.md)
-- [面试讲解稿](docs/interview/AutoKV-Skip-interview-guide.zh-CN.md)
-- [批准的技术规格](docs/superpowers/specs/2026-08-24-autokv-skip-design.md)
-- [实现计划](docs/superpowers/plans/2026-08-24-autokv-skip-implementation.md)
-
-## 诚实的成功定义
-
-预注册主验收条件是 FP8 capacity 至少为 BF16 的 1.85×、Auto-4 至少为 1.65×；只有当 `Q_bf16 - Q_fp8 > 0.01` 时才计算 gap recovery，并要求 Auto-4 回收至少 50%。Auto-4 还应高于 Random-4 中位数和 Inverted-4。
-
-若质量没有可测缺口，结论是“FP8 在本任务上已足够”；若 Auto-4 不优于随机，结论是“这个边际敏感度代理在该模型/任务上没有证明有效”。这两种都是可讲的工程结果，禁止事后更换指标或筛选运行。
+- [v1.0 统一项目事实](docs/v1.0/FACTS.zh-CN.md)：本次运行环境、矩阵、指标、结果和限制的唯一统一说明。
+- [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md)：把结果与精确源码提交闭环的必做事项。
+- [v1.0 运行前服务器手册](RUNBOOK.zh-CN.md)：历史操作方案，不是本次运行的精确复现指南。
+- [v1.0 运行前技术规格](docs/superpowers/specs/2026-08-24-autokv-skip-design.md)：历史设计意图。
+- [v1.0 运行前实现计划](docs/superpowers/plans/2026-08-24-autokv-skip-implementation.md)：历史实现计划。
+- [推理优化技术综述](docs/research/inference-optimization-landscape.zh-CN.md)：研究背景及运行前技术判断。
+- [v1.0 面试讲解稿](docs/interview/AutoKV-Skip-interview-guide.zh-CN.md)：运行前模板，尚未按本次结果完成改写。
 
 ## License
 

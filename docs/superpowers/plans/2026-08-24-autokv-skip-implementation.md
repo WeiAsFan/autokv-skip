@@ -1,5 +1,7 @@
 # AutoKV-Skip Implementation Plan
 
+> **文档状态：v1.0 运行前历史实现计划。** 本文中的任务、命令、环境假设和门禁用于记录原始实施路径，不是运行 `8181c9a332ef6e9c` 的精确源码或复现说明。实际事实见 [v1.0 统一项目事实](../../v1.0/FACTS.zh-CN.md)，对应源码必须按 [v1.0 源码发布要求](../../v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 单独发布。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a standard-library Python controller that safely runs, resumes, evaluates, and reports the approved AutoKV-Skip experiment on one driver-locked RTX A6000.

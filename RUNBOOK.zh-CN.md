@@ -1,5 +1,7 @@
 # AutoKV-Skip A6000 独立运行手册
 
+> **文档状态：v1.0 运行前历史手册。** 文中的 R535、Docker、镜像版本、动态 scale、门禁数量和命令属于运行前方案，不是 `8181c9a332ef6e9c` 的实际环境或精确复现步骤。实际运行事实见 [v1.0 统一项目事实](docs/v1.0/FACTS.zh-CN.md)；在满足 [对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 前，不得据本文声称该运行已可复现。
+
 版本日期：2026-08-25
 
 目标：在单张 NVIDIA RTX A6000 48 GiB、驱动严格为 `535.230.02` 的 Linux 服务器上，从零完成 AutoKV-Skip quick 实验；SSH 中断后可恢复；全程不需要修改驱动，也不依赖宿主 CUDA toolkit。
