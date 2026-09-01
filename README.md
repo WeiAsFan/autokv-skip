@@ -53,6 +53,8 @@ BF16 与全 FP8 的平均 Q 差只有 `3.8758e-5`，配对 95% CI 为 `[-8.175e-
 
 - [v1.0 统一项目事实](docs/v1.0/FACTS.zh-CN.md)：本次运行环境、矩阵、指标、结果和限制的唯一统一说明。
 - [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md)：把结果与精确源码提交闭环的必做事项。
+- [v2.0 设计文档](docs/v2.0/DESIGN.zh-CN.md)：质量缺口驱动的 `P_k` 自动选择、三层数据与验证规则。
+- [v2.0 阶段 2–4 执行计划](docs/v2.0/EXECUTION-PLAN.zh-CN.md)：规模受控的实现、GPU 运行和精简证据计划。
 - [v1.0 运行前服务器手册](RUNBOOK.zh-CN.md)：历史操作方案，不是本次运行的精确复现指南。
 - [v1.0 运行前技术规格](docs/superpowers/specs/2026-08-24-autokv-skip-design.md)：历史设计意图。
 - [v1.0 运行前实现计划](docs/superpowers/plans/2026-08-24-autokv-skip-implementation.md)：历史实现计划。
