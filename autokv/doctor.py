@@ -13,7 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from autokv.commands import CommandResult, image_probe_commands, run_command
+from autokv.commands import (
+    CommandResult,
+    LOCAL_CUDA_HOME,
+    LOCAL_NVCC,
+    image_probe_commands,
+    local_cuda_toolchain_env,
+    run_command,
+)
 from autokv.config import Profile
 from autokv.io import atomic_write_json, redact
 
@@ -265,7 +272,7 @@ def lock_first_compatible_image(
             doctor_path,
             {"ok": False, "host": asdict(facts), "gates": [asdict(g) for g in gates], "events": events},
         )
-        raise DoctorError("host does not match the locked A6000/535.230.02 profile")
+        raise DoctorError("host does not match the locked A6000/580.173.02 profile")
 
     docker_result = _run(
         runner, ("docker", "version", "--format", "{{.Server.Version}}"), 30
@@ -398,5 +405,152 @@ def lock_first_compatible_image(
             "selected_image": selected_identity.image_ref,
             "events": events,
         },
+    )
+    return lock
+
+
+def _local_vllm_paths(project_root: Path, model_id: str, revision: str) -> tuple[Path, Path]:
+    venv = (project_root / ".venv-vllm-pgcg").resolve()
+    python = venv / "bin" / "python"
+    model_cache_name = "models--" + model_id.replace("/", "--")
+    snapshot = (
+        project_root / ".cache" / "huggingface" / model_cache_name / "snapshots" / revision
+    ).resolve()
+    if not python.is_file():
+        raise DoctorError(f"local vLLM Python is missing: {python}")
+    if not snapshot.is_dir():
+        raise DoctorError(f"local model snapshot is missing: {snapshot}")
+    return python, snapshot
+
+
+def lock_local_vllm(
+    profile: Profile,
+    project_root: Path,
+    *,
+    runner: Runner = run_command,
+) -> dict[str, Any]:
+    """Probe and lock the project-owned local vLLM environment without Docker."""
+    environment_dir = project_root.resolve() / "runs" / "_environment"
+    doctor_path = environment_dir / "doctor.json"
+    lock_path = environment_dir / "lock.json"
+    events: list[dict[str, Any]] = []
+    gpu_result = _run(
+        runner,
+        (
+            "nvidia-smi",
+            "--query-gpu=name,driver_version,memory.total,compute_cap",
+            "--format=csv,noheader,nounits",
+        ),
+        30,
+    )
+    events.append(_event("host_gpu", None, gpu_result))
+    if not gpu_result.ok:
+        atomic_write_json(doctor_path, {"ok": False, "backend": "local_vllm", "events": events})
+        raise DoctorError("nvidia-smi read-only query failed; do not modify the driver")
+    facts = parse_gpu_csv(gpu_result.stdout)
+    gates = validate_host(facts, profile.hardware.driver)
+    if not all(gate.ok for gate in gates):
+        atomic_write_json(
+            doctor_path,
+            {"ok": False, "backend": "local_vllm", "host": asdict(facts),
+             "gates": [asdict(g) for g in gates], "events": events},
+        )
+        raise DoctorError("host does not match the locked A6000/580.173.02 profile")
+
+    revision: str | None = None
+    model_root = project_root / ".cache" / "huggingface" / (
+        "models--" + profile.model.model_id.replace("/", "--")
+    ) / "snapshots"
+    revisions = sorted(
+        path.name for path in model_root.iterdir()
+        if path.is_dir() and re.fullmatch(r"[0-9a-fA-F]{40}", path.name)
+    ) if model_root.is_dir() else []
+    if len(revisions) != 1:
+        raise DoctorError(
+            "local model cache must contain exactly one immutable snapshot revision"
+        )
+    revision = revisions[0].lower()
+    python, snapshot = _local_vllm_paths(project_root, profile.model.model_id, revision)
+    vllm_entrypoint = python.parent / "vllm"
+    if not vllm_entrypoint.is_file():
+        raise DoctorError(f"local vLLM entrypoint is missing: {vllm_entrypoint}")
+    probe_code = (
+        "import json, torch, flashinfer, vllm; "
+        "print(json.dumps({"
+        "'cuda_available': torch.cuda.is_available(), "
+        "'device_count': torch.cuda.device_count(), "
+        "'compute_capability': list(torch.cuda.get_device_capability(0)), "
+        "'gpu_name': torch.cuda.get_device_name(0), "
+        "'torch': torch.__version__, 'cuda': torch.version.cuda, "
+        "'vllm': vllm.__version__, "
+        "'flashinfer': getattr(flashinfer, '__version__', 'unknown')}))"
+    )
+    probe_env = local_cuda_toolchain_env(os.environ.copy())
+    cache_root = project_root.resolve() / ".cache"
+    probe_env["FLASHINFER_WORKSPACE_BASE"] = str(project_root.resolve())
+    probe_env["TORCH_EXTENSIONS_DIR"] = str(cache_root / "torch_extensions")
+    library_candidates = (
+        python.parent.parent / "lib" / "python3.12" / "site-packages" / "nvidia" / "cu13" / "lib",
+        python.parent.parent / "lib" / "python3.12" / "site-packages" / "nvidia" / "cuda_runtime" / "lib",
+    )
+    library_paths = tuple(path for path in library_candidates if path.is_dir())
+    if not library_paths:
+        raise DoctorError("local vLLM CUDA library directories are missing")
+    probe_env["LD_LIBRARY_PATH"] = ":".join(
+        str(path) for path in library_paths
+    ) + (":" + probe_env["LD_LIBRARY_PATH"] if probe_env.get("LD_LIBRARY_PATH") else "")
+    if probe_env["CUDA_HOME"] != LOCAL_CUDA_HOME or probe_env["FLASHINFER_NVCC"] != LOCAL_NVCC:
+        raise DoctorError("local CUDA toolchain paths are not the approved host paths")
+    if not Path(probe_env["FLASHINFER_NVCC"]).is_file():
+        raise DoctorError(f"local nvcc is missing: {probe_env['FLASHINFER_NVCC']}")
+    probe_result = runner((str(python), "-c", probe_code), timeout=300, env=probe_env)
+    events.append(_event("local_vllm_probe", None, probe_result))
+    if not probe_result.ok:
+        atomic_write_json(
+            doctor_path,
+            {"ok": False, "backend": "local_vllm", "host": asdict(facts),
+             "gates": [asdict(g) for g in gates], "events": events},
+        )
+        raise DoctorError("local vLLM CUDA/FlashInfer probe failed")
+    payload = parse_cuda_probe(probe_result.stdout)
+    help_result = runner(
+        (str(vllm_entrypoint), "serve", "--help=all"), timeout=120, env=probe_env
+    )
+    events.append(_event("local_feature_probe", None, help_result))
+    missing = () if not help_result.ok else missing_required_flags(help_result.stdout)
+    if not help_result.ok or missing:
+        raise DoctorError(f"local vLLM is missing required flags: {', '.join(missing)}")
+    freeze_result = runner((str(python), "-m", "pip", "freeze"), timeout=120, env=probe_env)
+    events.append(_event("local_dependency_freeze", None, freeze_result))
+    if not freeze_result.ok:
+        raise DoctorError("could not record local vLLM dependencies")
+    import hashlib
+    runtime_id = "local-vllm-" + hashlib.sha256(freeze_result.stdout.encode("utf-8")).hexdigest()[:16]
+    lock = {
+        "schema_version": 2,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "backend": "local_vllm",
+        "runtime_id": runtime_id,
+        "venv_path": str(python.parent.parent),
+        "python": str(python),
+        "vllm": str(vllm_entrypoint),
+        "model_path": str(snapshot),
+        "host": asdict(facts),
+        "model_id": profile.model.model_id,
+        "model_revision": revision,
+        "versions": {key: payload.get(key) for key in ("torch", "cuda", "vllm", "flashinfer")},
+        "compatibility_env": "VLLM_ENABLE_CUDA_COMPATIBILITY=1",
+        "cuda_home": probe_env["CUDA_HOME"],
+        "flashinfer_workspace_base": probe_env["FLASHINFER_WORKSPACE_BASE"],
+        "torch_extensions_dir": probe_env["TORCH_EXTENSIONS_DIR"],
+        "nvcc": probe_env["FLASHINFER_NVCC"],
+        "ld_library_path": probe_env["LD_LIBRARY_PATH"],
+        "dependency_freeze_sha256": hashlib.sha256(freeze_result.stdout.encode("utf-8")).hexdigest(),
+    }
+    atomic_write_json(lock_path, lock)
+    atomic_write_json(
+        doctor_path,
+        {"ok": True, "backend": "local_vllm", "host": asdict(facts),
+         "gates": [asdict(g) for g in gates], "local_probe": payload, "events": events},
     )
     return lock

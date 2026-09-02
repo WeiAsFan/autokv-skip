@@ -28,11 +28,20 @@ from autokv.benchmark import (
     telemetry_is_usable,
 )
 from autokv.client import VllmHttpError
-from autokv.commands import bench_command, format_command, run_command, server_command
+from autokv.commands import (
+    bench_command,
+    format_command,
+    local_bench_command,
+    local_server_command,
+    run_command,
+    runtime_identity,
+    server_command,
+)
 from autokv.config import EXPECTED_DRIVER, Profile, load_profile
 from autokv.doctor import (
     DoctorError,
     lock_first_compatible_image,
+    lock_local_vllm,
     parse_gpu_csv,
     validate_host,
 )
@@ -41,6 +50,7 @@ from autokv.experiment import (
     canonical_run_id,
     is_complete,
     validate_container_command,
+    validate_local_vllm_command,
     validate_experiment_rows,
     validate_server_log,
 )
@@ -261,6 +271,28 @@ def _doctor_path(root: Path) -> Path:
 def _validate_lock(lock: Any, profile: Profile) -> Mapping[str, Any]:
     if not isinstance(lock, Mapping):
         raise ValueError("environment lock is not a JSON object")
+    if lock.get("backend") == "local_vllm":
+        for key in ("runtime_id", "python", "vllm", "venv_path", "model_path", "model_revision"):
+            if not isinstance(lock.get(key), str) or not lock[key]:
+                raise ValueError(f"local environment lock is missing {key}")
+        if not re.fullmatch(r"local-vllm-[0-9a-f]{16}", str(lock["runtime_id"])):
+            raise ValueError("local environment lock runtime_id is invalid")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(lock["model_revision"])):
+            raise ValueError("environment lock model_revision is not immutable")
+        if lock.get("model_id") not in (None, profile.model.model_id):
+            raise ValueError("environment lock model does not match profile")
+        host = lock.get("host")
+        if not isinstance(host, Mapping) or host.get("driver") != EXPECTED_DRIVER:
+            raise ValueError(
+                f"environment lock does not prove the fixed {EXPECTED_DRIVER} driver"
+            )
+        versions = lock.get("versions")
+        if not isinstance(versions, Mapping) or any(
+            not isinstance(versions.get(key), str) or not versions[key]
+            for key in ("torch", "cuda", "vllm", "flashinfer")
+        ):
+            raise ValueError("local environment lock has incomplete package versions")
+        return lock
     image_ref = lock.get("image_ref")
     image_digest = lock.get("image_digest")
     revision = lock.get("model_revision")
@@ -280,7 +312,7 @@ def _validate_lock(lock: Any, profile: Profile) -> Mapping[str, Any]:
         raise ValueError("environment lock model does not match profile")
     host = lock.get("host")
     if not isinstance(host, Mapping) or host.get("driver") != EXPECTED_DRIVER:
-        raise ValueError("environment lock does not prove the fixed 535.230.02 driver")
+        raise ValueError("environment lock does not prove the fixed 580.173.02 driver")
     return lock
 
 
@@ -362,13 +394,28 @@ def _ensure_run_manifest(context: RuntimeContext) -> Path:
         "profile_path": profile_display_path,
         "profile_sha256": context.profile_hash,
         "dataset_hash": context.dataset_hash,
-        "image_ref": context.lock["image_ref"],
-        "image_digest": context.lock["image_digest"],
         "model_id": context.profile.model.model_id,
         "model_revision": context.lock["model_revision"],
         "storage_timezone": "UTC",
         "display_timezone": "Asia/Shanghai",
     }
+    if context.lock.get("backend") == "local_vllm":
+        expected.update(
+            {
+                "backend": "local_vllm",
+                "runtime_id": context.lock["runtime_id"],
+                "venv_path": context.lock["venv_path"],
+                "model_path": context.lock["model_path"],
+                "versions": context.lock["versions"],
+            }
+        )
+    else:
+        expected.update(
+            {
+                "image_ref": context.lock["image_ref"],
+                "image_digest": context.lock["image_digest"],
+            }
+        )
     if path.is_file():
         observed = read_json(path)
         if not isinstance(observed, Mapping):
@@ -514,7 +561,7 @@ def _runtime_context(root: Path, profile_name: str) -> RuntimeContext:
     source = _source_identity()
     run_id = canonical_run_id(
         profile_hash,
-        str(lock["image_digest"]),
+        runtime_identity(lock),
         str(lock["model_revision"]),
         dataset_hash,
         str(source["tree_sha256"]),
@@ -586,42 +633,49 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
         core = 1 + profile.model.num_layers + 1
     quality_configurations = 3 + len(profile.selection.random_seeds) + 3
     benchmark_scenarios = len(build_benchmark_matrix(profile))
-    placeholder_image = "vllm/vllm-openai@sha256:" + "f" * 64
     placeholder_revision = "a" * 40
     placeholder_run = f"dry-{profile.name}"
+    placeholder_model = (
+        root
+        / ".cache"
+        / "huggingface"
+        / ("models--" + profile.model.model_id.replace("/", "--"))
+        / "snapshots"
+        / placeholder_revision
+    )
     examples = {
-        "bf16": server_command(
+        "bf16": local_server_command(
             profile,
-            placeholder_image,
+            str(root / ".venv-vllm-pgcg" / "bin" / "vllm"),
             Variant.bf16(),
             root,
             8000,
-            placeholder_run,
             placeholder_revision,
+            model_path=placeholder_model,
         ),
-        "fp8": server_command(
+        "fp8": local_server_command(
             profile,
-            placeholder_image,
+            str(root / ".venv-vllm-pgcg" / "bin" / "vllm"),
             Variant.fp8(),
             root,
             8000,
-            placeholder_run,
             placeholder_revision,
+            model_path=placeholder_model,
         ),
-        "auto-4-placeholder": server_command(
+        "auto-4-placeholder": local_server_command(
             profile,
-            placeholder_image,
+            str(root / ".venv-vllm-pgcg" / "bin" / "vllm"),
             Variant.mixed("auto-4", (0, 1, 2, 3)),
             root,
             8000,
-            placeholder_run,
             placeholder_revision,
+            model_path=placeholder_model,
         ),
     }
     first_benchmark = build_benchmark_matrix(profile)[0]
-    benchmark_example = bench_command(
+    benchmark_example = local_bench_command(
         profile,
-        placeholder_image,
+        str(root / ".venv-vllm-pgcg" / "bin" / "vllm"),
         root,
         8000,
         first_benchmark.input_length,
@@ -632,11 +686,13 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
         / "placeholder"
         / "example.json",
         placeholder_revision,
+        model_path=placeholder_model,
     )
     return {
         "profile": profile.name,
         "executed": False,
         "driver_policy": f"must remain exactly {EXPECTED_DRIVER}",
+        "backend": "local_vllm",
         "core_probe_configurations": core,
         "probe_samples_per_configuration": probe_samples,
         "probe_requests": core * probe_samples,
@@ -651,9 +707,15 @@ def dry_run(root: Path, profile_name: str) -> dict[str, Any]:
         "smoke_engine_starts": 2,
         "estimated_total_engine_starts": 2 + core + quality_configurations + 3,
         "run_steps": list(RUN_STEPS),
-        "server_command_example": format_command(examples["auto-4-placeholder"]),
+        "server_command_example": (
+            "VLLM_ENABLE_CUDA_COMPATIBILITY=1 "
+            + format_command(examples["auto-4-placeholder"])
+        ),
         "server_commands": {
-            name: format_command(argv) for name, argv in examples.items()
+            name: (
+                "VLLM_ENABLE_CUDA_COMPATIBILITY=1 " + format_command(argv)
+            )
+            for name, argv in examples.items()
         },
         "benchmark_command_example": format_command(benchmark_example),
         "planned_artifacts": [
@@ -1386,9 +1448,15 @@ def _experiment_record_is_complete(
             or manifest.get("run_id") != expected_run_id
             or manifest.get("profile") != profile.name
             or manifest.get("model_id") != profile.model.model_id
-            or not isinstance(manifest.get("image_ref"), str)
-            or not isinstance(manifest.get("image_digest"), str)
             or not isinstance(manifest.get("model_revision"), str)
+        ):
+            return False
+        local_manifest = manifest.get("backend") == "local_vllm"
+        if local_manifest:
+            if not isinstance(manifest.get("runtime_id"), str):
+                return False
+        elif not isinstance(manifest.get("image_ref"), str) or not isinstance(
+            manifest.get("image_digest"), str
         ):
             return False
         evidence = {
@@ -1414,8 +1482,14 @@ def _experiment_record_is_complete(
         expected_command_mode = (
             "auto" if expected_phase in {"smoke-a", "smoke-b"} else expected_quality_mode
         )
+        if local_manifest:
+            command_identity = command.get("runtime_id")
+            manifest_identity = manifest.get("runtime_id")
+        else:
+            command_identity = command.get("image_ref", command.get("runtime_id"))
+            manifest_identity = manifest.get("image_ref", manifest.get("image_digest"))
         if (
-            command.get("image_ref") != manifest["image_ref"]
+            command_identity != manifest_identity
             or command.get("model_revision") != manifest["model_revision"]
             or command.get("quality_mode") != expected_command_mode
         ):
@@ -1423,7 +1497,18 @@ def _experiment_record_is_complete(
         inspected = command.get("inspected_argv")
         if not isinstance(inspected, list):
             return False
-        validate_container_command(json.dumps(inspected), expected_variant)
+        if local_manifest:
+            validate_local_vllm_command(
+                json.dumps(inspected),
+                expected_variant,
+                profile.calculate_kv_scales,
+            )
+        else:
+            validate_container_command(
+                json.dumps(inspected),
+                expected_variant,
+                profile.calculate_kv_scales,
+            )
         validate_server_log(
             evidence["server_log"].read_text(encoding="utf-8"),
             expected_variant,
@@ -1436,10 +1521,11 @@ def _experiment_record_is_complete(
             expected_variant,
             expected_cases,
             run_id=expected_run_id,
-            image_digest=str(manifest["image_digest"]),
+            image_digest=str(manifest.get("runtime_id", manifest.get("image_digest"))),
             model_revision=str(manifest["model_revision"]),
             backend=profile.model.attention_backend,
             quality_mode=expected_quality_mode,
+            runtime_backend="local_vllm" if local_manifest else "docker",
         )
         return True
     except (OSError, TypeError, ValueError):
@@ -1823,9 +1909,18 @@ def _perf_status_is_complete(
                 or not isinstance(command.get("inspected_server_argv"), list)
             ):
                 return False
-            validate_container_command(
-                json.dumps(command["inspected_server_argv"]), variant
-            )
+            if command.get("backend") == "local_vllm":
+                validate_local_vllm_command(
+                    json.dumps(command["inspected_server_argv"]),
+                    variant,
+                    profile.calculate_kv_scales,
+                )
+            else:
+                validate_container_command(
+                    json.dumps(command["inspected_server_argv"]),
+                    variant,
+                    profile.calculate_kv_scales,
+                )
             matrix_path = _verified_path(
                 root, matrix_record.get("path"), matrix_record.get("sha256")
             )
@@ -1836,7 +1931,8 @@ def _perf_status_is_complete(
                 or matrix_state.get("complete") is not True
                 or matrix_state.get("run_id") != run_id
                 or matrix_state.get("variant") != dict(variant_raw)
-                or matrix_state.get("image_digest") != summary.get("image_digest")
+                or matrix_state.get("runtime_id")
+                != summary.get("runtime_id", summary.get("image_digest"))
                 or matrix_state.get("model_revision")
                 != summary.get("model_revision")
                 or matrix_state.get("scenarios") != summary.get("scenarios")
@@ -1886,7 +1982,7 @@ def read_status(root: Path, profile_name: str) -> dict[str, Any]:
     if data_ready and lock_ready and manifest is not None and lock is not None:
         run_id = canonical_run_id(
             sha256_file(profile_path),
-            str(lock["image_digest"]),
+            runtime_identity(lock),
             str(lock["model_revision"]),
             str(manifest["dataset_hash"]),
             str(source["tree_sha256"]),
@@ -2035,12 +2131,13 @@ def create_diagnostic_archive(root: Path, profile_name: str) -> dict[str, Any]:
 def _doctor(root: Path, profile_name: str) -> dict[str, Any]:
     _linux_gate()
     profile, _ = _load_named_profile(root, profile_name)
-    lock = lock_first_compatible_image(profile, root)
+    lock = lock_local_vllm(profile, root)
     return {
         "ok": True,
         "profile": profile.name,
         "driver": lock["host"]["driver"],
-        "image_ref": lock["image_ref"],
+        "backend": lock["backend"],
+        "runtime_id": lock["runtime_id"],
         "model_revision": lock["model_revision"],
         "doctor": str(_doctor_path(root)),
         "lock": str(_lock_path(root)),
@@ -2057,12 +2154,13 @@ def _lock_image(root: Path, profile_name: str) -> dict[str, Any]:
         lock = _validate_lock(read_json(path), profile)
         reused = True
     else:
-        lock = lock_first_compatible_image(profile, root)
+        lock = lock_local_vllm(profile, root)
     return {
         "ok": True,
         "profile": profile.name,
         "reused": reused,
-        "image_ref": lock["image_ref"],
+        "backend": lock["backend"],
+        "runtime_id": lock["runtime_id"],
         "model_revision": lock["model_revision"],
         "lock": str(path),
     }
@@ -2080,7 +2178,7 @@ def run_all(root: Path, profile_name: str, port: int) -> dict[str, Any]:
             raise ValueError("doctor state is not complete")
         del existing_lock
     except (OSError, TypeError, ValueError):
-        lock_first_compatible_image(profile, root)
+        lock_local_vllm(profile, root)
     completed.extend(("doctor", "lock-image"))
     make_data(root, profile_name)
     completed.append("make-data")

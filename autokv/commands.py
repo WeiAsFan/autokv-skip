@@ -1,4 +1,4 @@
-"""Shell-free subprocess execution and Docker argument construction."""
+"""Shell-free subprocess execution and Docker/local vLLM command construction."""
 
 from __future__ import annotations
 
@@ -21,6 +21,66 @@ PROJECT_LABEL = "io.autokv.project=autokv-skip"
 COMPATIBILITY_ENV = "VLLM_ENABLE_CUDA_COMPATIBILITY=1"
 VLLM_DEBUG_ENV = "VLLM_LOGGING_LEVEL=DEBUG"
 HF_CACHE_IN_CONTAINER = "/root/.cache/huggingface"
+
+
+LOCAL_CUDA_HOME = "/usr/local/cuda"
+LOCAL_NVCC = "/usr/local/cuda/bin/nvcc"
+
+def runtime_identity(lock: Mapping[str, str]) -> str:
+    """Return the immutable identity for either backend."""
+    backend = lock.get("backend", "docker")
+    key = "runtime_id" if backend == "local_vllm" else "image_digest"
+    value = lock.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"environment lock is missing {key}")
+    return value
+
+
+def local_cuda_toolchain_env(
+    environment: Mapping[str, str],
+    *,
+    cuda_home: str = LOCAL_CUDA_HOME,
+    nvcc: str = LOCAL_NVCC,
+) -> dict[str, str]:
+    """Return an environment with a deterministic host CUDA toolchain."""
+    configured = dict(environment)
+    configured["CUDA_HOME"] = cuda_home
+    configured["CUDA_PATH"] = cuda_home
+    configured["FLASHINFER_NVCC"] = nvcc
+    path = configured.get("PATH", "")
+    configured["PATH"] = f"{cuda_home}/bin" + (os.pathsep + path if path else "")
+    return configured
+
+
+def local_vllm_env(lock: Mapping[str, str]) -> dict[str, str]:
+    if lock.get("backend") != "local_vllm":
+        raise ValueError("local_vllm_env requires a local_vllm lock")
+    environment = os.environ.copy()
+    library_path = lock.get("ld_library_path")
+    if not isinstance(library_path, str) or not library_path:
+        raise ValueError("local vLLM lock has no LD_LIBRARY_PATH")
+    cuda_home = lock.get("cuda_home", LOCAL_CUDA_HOME)
+    nvcc = lock.get("nvcc", f"{cuda_home}/bin/nvcc")
+    if not isinstance(cuda_home, str) or not cuda_home:
+        raise ValueError("local vLLM lock has no CUDA_HOME")
+    if not isinstance(nvcc, str) or not nvcc:
+        raise ValueError("local vLLM lock has no nvcc path")
+    environment = local_cuda_toolchain_env(
+        environment,
+        cuda_home=cuda_home,
+        nvcc=nvcc,
+    )
+    for environment_name, lock_key in (
+        ("FLASHINFER_WORKSPACE_BASE", "flashinfer_workspace_base"),
+        ("TORCH_EXTENSIONS_DIR", "torch_extensions_dir"),
+    ):
+        cache_path = lock.get(lock_key)
+        if isinstance(cache_path, str) and cache_path:
+            environment[environment_name] = cache_path
+    environment["LD_LIBRARY_PATH"] = library_path
+    environment["VLLM_ENABLE_CUDA_COMPATIBILITY"] = "1"
+    environment["VLLM_LOGGING_LEVEL"] = "DEBUG"
+    return environment
 
 
 @dataclass(frozen=True)
@@ -222,6 +282,75 @@ def server_command(
     return tuple(argv)
 
 
+def _model_snapshot(project_root: Path, model_id: str, revision: str) -> Path:
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+        raise ValueError("model_revision must be a 40-character commit hash")
+    model_cache_name = "models--" + model_id.replace("/", "--")
+    snapshot = (
+        project_root
+        / ".cache"
+        / "huggingface"
+        / model_cache_name
+        / "snapshots"
+        / revision.lower()
+    ).resolve()
+    if not snapshot.is_dir():
+        raise ValueError(f"local Hugging Face snapshot is missing: {snapshot}")
+    return snapshot
+
+
+def local_server_command(
+    profile: Profile,
+    vllm_python: str,
+    variant: Variant,
+    project_root: Path,
+    port: int,
+    model_revision: str,
+    model_path: Path | None = None,
+) -> tuple[str, ...]:
+    """Build the direct local-vLLM equivalent of ``server_command``."""
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    if not vllm_python.strip():
+        raise ValueError("vllm_python cannot be empty")
+    variant.validate_for_model(profile.model.num_layers)
+    model_path = model_path or _model_snapshot(
+        project_root, profile.model.model_id, model_revision
+    )
+    argv: list[str] = [
+        vllm_python,
+        "serve",
+        "--model",
+        str(model_path),
+        "--served-model-name",
+        profile.model.model_id,
+        "--dtype",
+        profile.model.dtype,
+        "--attention-backend",
+        profile.model.attention_backend,
+        "--max-model-len",
+        str(profile.model.max_model_len),
+        "--kv-cache-memory-bytes",
+        profile.kv_cache_memory,
+        "--seed",
+        str(profile.seed),
+        "--tensor-parallel-size",
+        "1",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+        "--kv-cache-dtype",
+        variant.kv_dtype,
+    ]
+    if variant.kv_dtype == "fp8_e4m3" and profile.calculate_kv_scales:
+        argv.append("--calculate-kv-scales")
+    if variant.skip_layers:
+        argv.append("--kv-cache-dtype-skip-layers")
+        argv.extend(str(layer) for layer in variant.skip_layers)
+    return tuple(argv)
+
+
 def _container_result_path(project_root: Path, relative_path: Path) -> str:
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise ValueError("benchmark result path must be project-relative")
@@ -321,4 +450,73 @@ def bench_command(
         result_directory,
         "--result-filename",
         result_filename,
+    )
+
+
+def local_bench_command(
+    profile: Profile,
+    vllm_python: str,
+    project_root: Path,
+    port: int,
+    input_length: int,
+    output_length: int,
+    result_path: Path,
+    model_revision: str,
+    model_path: Path | None = None,
+) -> tuple[str, ...]:
+    """Build a local ``vllm bench serve`` command from the project venv."""
+    if input_length <= 0 or output_length <= 0:
+        raise ValueError("benchmark lengths must be positive")
+    if result_path.is_absolute() is False:
+        result_path = (project_root / result_path).resolve()
+    result_path = result_path.resolve()
+    try:
+        result_path.relative_to(project_root.resolve())
+    except ValueError as exc:
+        raise ValueError("benchmark result path must be project-relative") from exc
+    model_path = model_path or _model_snapshot(
+        project_root, profile.model.model_id, model_revision
+    )
+    return (
+        vllm_python,
+        "bench",
+        "serve",
+        "--backend",
+        "openai",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--endpoint",
+        "/v1/completions",
+        "--model",
+        profile.model.model_id,
+        "--tokenizer",
+        str(model_path),
+        "--seed",
+        str(profile.seed),
+        "--dataset-name",
+        "random",
+        "--random-input-len",
+        str(input_length),
+        "--random-output-len",
+        str(output_length),
+        "--num-prompts",
+        str(profile.benchmark.num_prompts),
+        "--request-rate",
+        "inf",
+        "--temperature",
+        "0",
+        "--num-warmups",
+        "1",
+        "--ignore-eos",
+        "--percentile-metrics",
+        "ttft,tpot,itl,e2el",
+        "--metric-percentiles",
+        "90,99",
+        "--save-result",
+        "--result-dir",
+        str(result_path.parent),
+        "--result-filename",
+        result_path.name,
     )

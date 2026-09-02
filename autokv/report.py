@@ -313,7 +313,15 @@ def render_report(
     inverted_q = aggregates["inverted-4"].quality_score
 
     auto_layers = [int(layer) for layer in selection.get("auto_layers", [])]
-    image_ref = str(lock.get("image_ref", "missing"))
+    local_backend = lock.get("backend") == "local_vllm"
+    runtime_ref = (
+        str(lock.get("venv_path", "missing"))
+        if local_backend
+        else str(lock.get("image_ref", "missing"))
+    )
+    runtime_id = str(
+        lock.get("runtime_id" if local_backend else "image_digest", "missing")
+    )
     model_revision = str(lock.get("model_revision", "missing"))
     host = lock.get("host", {}) if isinstance(lock.get("host"), Mapping) else {}
     versions = (
@@ -351,12 +359,14 @@ def render_report(
             "",
             f"- GPU：{host.get('gpu_name', 'missing')}",
             f"- 驱动：{host.get('driver', 'missing')}（项目不更新驱动）",
-            f"- 镜像：`{image_ref}`",
+            f"- 运行后端：`{'local_vllm' if local_backend else 'docker'}`",
+            f"- 运行环境：`{runtime_ref}`",
+            f"- 运行身份：`{runtime_id}`",
             f"- 模型 revision：`{model_revision}`",
-            f"- vLLM：{versions.get('vllm', 'missing')}；容器 CUDA：{versions.get('cuda', 'missing')}",
+            f"- vLLM：{versions.get('vllm', 'missing')}；CUDA：{versions.get('cuda', 'missing')}",
             f"- 源码树 SHA-256：`{source.get('tree_sha256', 'missing')}`",
             f"- Git commit：`{source.get('git_commit', 'not-available')}`；dirty：{source.get('git_dirty', 'not-available')}",
-            "- 注意力后端：FLASHINFER；KV 预算：16G；随机 token scales：启用。",
+            "- 注意力后端：FLASHINFER；KV 预算：16G；动态 token scales：关闭（C 配置已验证）。",
             f"- 全实验质量评分模式：{selection.get('quality_mode', 'missing')}。",
             f"- 选层搜索范围：{selection.get('selection_scope', 'missing')}。",
             "",
