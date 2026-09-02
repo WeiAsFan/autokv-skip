@@ -20,7 +20,11 @@ from autokv.commands import (
     bench_command,
     benchmark_container_name,
     container_name,
+    local_bench_command,
+    local_server_command,
+    local_vllm_env,
     run_command,
+    runtime_identity,
     server_command,
 )
 from autokv.config import Profile
@@ -31,8 +35,10 @@ from autokv.experiment import (
     safe_cleanup_owned_container,
     safe_remove_stale_container,
     validate_container_command,
+    validate_local_vllm_command,
     validate_server_log,
 )
+from autokv.local_runtime import LocalVllmProcess
 from autokv.io import (
     atomic_write_json,
     atomic_write_text,
@@ -189,6 +195,20 @@ def extract_performance_metrics(payload: Mapping[str, Any]) -> dict[str, float]:
         value = payload.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             metrics[key] = float(value)
+    completed = payload.get("completed")
+    if not isinstance(completed, int) or isinstance(completed, bool):
+        raise ValueError("vLLM benchmark result has no valid completed count")
+    failed = payload.get("failed")
+    if not isinstance(failed, int) or isinstance(failed, bool):
+        raise ValueError("vLLM benchmark result has no valid failed count")
+    if completed <= 0:
+        raise ValueError(
+            f"vLLM benchmark completed no requests (completed={completed})"
+        )
+    if failed != 0:
+        raise ValueError(
+            f"vLLM benchmark result contains failed requests (failed={failed})"
+        )
     if "request_throughput" not in metrics:
         raise ValueError("vLLM benchmark result has no request_throughput")
     return metrics
@@ -370,9 +390,18 @@ class BenchmarkRunner:
             raise ValueError("force config ID must be 12 lowercase hex characters")
         self.force_config_id = force_config_id
         self._forced_keys: set[tuple[str, str]] = set()
-        for key in ("image_ref", "image_digest", "model_revision"):
+        required = (
+            ("runtime_id", "python", "vllm", "model_revision")
+            if lock.get("backend") == "local_vllm"
+            else ("image_ref", "image_digest", "model_revision")
+        )
+        for key in required:
             if not isinstance(lock.get(key), str) or not lock[key]:
                 raise ValueError(f"environment lock is missing {key}")
+
+    @property
+    def local_backend(self) -> bool:
+        return self.lock.get("backend") == "local_vllm"
 
     @property
     def force_applied(self) -> bool:
@@ -425,7 +454,7 @@ class BenchmarkRunner:
                 or state.get("complete") is not True
                 or state.get("run_id") != run_id
                 or state.get("variant") != expected_variant
-                or state.get("image_digest") != self.lock["image_digest"]
+                or state.get("runtime_id") != runtime_identity(self.lock)
                 or state.get("model_revision") != self.lock["model_revision"]
             ):
                 return False
@@ -570,9 +599,18 @@ class BenchmarkRunner:
                 command.get("inspected_server_argv"), list
             ):
                 return False
-            validate_container_command(
-                json.dumps(command["inspected_server_argv"]), variant
-            )
+            if self.local_backend:
+                validate_local_vllm_command(
+                    json.dumps(command["inspected_server_argv"]),
+                    variant,
+                    self.profile.calculate_kv_scales,
+                )
+            else:
+                validate_container_command(
+                    json.dumps(command["inspected_server_argv"]),
+                    variant,
+                    self.profile.calculate_kv_scales,
+                )
             if parse_capacity_tokens(server_log) != observed_capacity:
                 return False
             if summary.get("capacity_validation") != capacity_validation(
@@ -657,36 +695,55 @@ class BenchmarkRunner:
             )
         result_directory.mkdir(parents=True, exist_ok=True)
 
-        image_ref = str(self.lock["image_ref"])
         model_revision = str(self.lock["model_revision"])
-        server_argv = server_command(
-            self.profile,
-            image_ref,
-            variant,
-            self.project_root,
-            port,
-            run_id,
-            model_revision,
-        )
+        if self.local_backend:
+            server_argv = local_server_command(
+                self.profile,
+                str(self.lock["vllm"]),
+                variant,
+                self.project_root,
+                port,
+                model_revision,
+            )
+        else:
+            image_ref = str(self.lock["image_ref"])
+            server_argv = server_command(
+                self.profile,
+                image_ref,
+                variant,
+                self.project_root,
+                port,
+                run_id,
+                model_revision,
+            )
         bench_commands: list[list[str]] = []
         for case in matrix:
             raw_path = result_directory / (
                 f"in{case.input_length}-out{case.output_length}-rep{case.repeat}.json"
             )
-            bench_commands.append(
-                list(
-                    bench_command(
-                        self.profile,
-                        image_ref,
-                        self.project_root,
-                        port,
-                        case.input_length,
-                        case.output_length,
-                        raw_path.relative_to(self.project_root),
-                        model_revision,
-                    )
+            if self.local_backend:
+                command = local_bench_command(
+                    self.profile,
+                    str(self.lock["vllm"]),
+                    self.project_root,
+                    port,
+                    case.input_length,
+                    case.output_length,
+                    raw_path,
+                    model_revision,
                 )
-            )
+            else:
+                command = bench_command(
+                    self.profile,
+                    image_ref,
+                    self.project_root,
+                    port,
+                    case.input_length,
+                    case.output_length,
+                    raw_path.relative_to(self.project_root),
+                    model_revision,
+                )
+            bench_commands.append(list(command))
         telemetry = self.telemetry_factory(telemetry_path)
         cached_matrix_complete = self._matrix_state_is_complete(
             matrix_state_path,
@@ -703,7 +760,8 @@ class BenchmarkRunner:
         command_record = {
             "server_argv": list(server_argv),
             "benchmark_argv": bench_commands,
-            "image_ref": image_ref,
+            "backend": str(self.lock.get("backend", "docker")),
+            "runtime_id": runtime_identity(self.lock),
             "model_revision": model_revision,
             "variant": {
                 "name": variant.name,
@@ -715,6 +773,7 @@ class BenchmarkRunner:
         atomic_write_json(command_path, command_record)
 
         name = container_name(run_id, variant)
+        server_process: LocalVllmProcess | None = None
         started = False
         cleanup_required = False
         captured_log = ""
@@ -722,26 +781,47 @@ class BenchmarkRunner:
         capacity: Capacity | None = None
         telemetry_started = False
         try:
-            safe_remove_stale_container(name, self.command_runner)
-            cleanup_required = True
-            start_result = self.command_runner(server_argv, timeout=120)
-            if not start_result.ok:
-                raise RuntimeError(
-                    f"docker run failed for benchmark {variant.name}: "
-                    f"returncode={start_result.returncode}; "
-                    f"stderr={start_result.stderr[-1000:] or '<empty>'}"
+            if self.local_backend:
+                server_process = LocalVllmProcess.start(
+                    server_argv,
+                    log_path,
+                    cwd=self.project_root,
+                    env=local_vllm_env(self.lock),
                 )
+                cleanup_required = True
+            else:
+                safe_remove_stale_container(name, self.command_runner)
+                cleanup_required = True
+                start_result = self.command_runner(server_argv, timeout=120)
+                if not start_result.ok:
+                    raise RuntimeError(
+                        f"docker run failed for benchmark {variant.name}: "
+                        f"returncode={start_result.returncode}; "
+                        f"stderr={start_result.stderr[-1000:] or '<empty>'}"
+                    )
             started = True
             client = self.client_factory(
                 f"http://127.0.0.1:{port}", self.profile.model.model_id
             )
             wait_until_ready(client, timeout_seconds=900, interval_seconds=2)
-            command_record["inspected_server_argv"] = list(
-                inspect_container_command(name, variant, self.command_runner)
-            )
+            if self.local_backend:
+                command_record["inspected_server_argv"] = list(server_argv)
+            else:
+                command_record["inspected_server_argv"] = list(
+                    inspect_container_command(
+                        name,
+                        variant,
+                        self.command_runner,
+                        calculate_kv_scales=self.profile.calculate_kv_scales,
+                    )
+                )
             atomic_write_json(command_path, command_record)
             client.complete("Reply with OK.", 1)
-            captured_log = self._logs(name)
+            captured_log = (
+                server_process.log_text()
+                if self.local_backend and server_process
+                else self._logs(name)
+            )
             validate_server_log(
                 captured_log, variant, num_layers=self.profile.model.num_layers
             )
@@ -767,12 +847,13 @@ class BenchmarkRunner:
                     bench_name = benchmark_container_name(
                         raw_path.relative_to(self.project_root)
                     )
-                    safe_remove_stale_container(bench_name, self.command_runner)
+                    if not self.local_backend:
+                        safe_remove_stale_container(bench_name, self.command_runner)
                     for attempt in range(MAX_TIMEOUT_RESTARTS + 1):
                         result = self.command_runner(tuple(argv), timeout=3600)
                         if result.ok:
                             break
-                        if result.returncode == 124:
+                        if result.returncode == 124 and not self.local_backend:
                             safe_cleanup_owned_container(
                                 bench_name, self.command_runner
                             )
@@ -809,19 +890,27 @@ class BenchmarkRunner:
                     finalization_errors.append(("telemetry", error))
             if started:
                 try:
-                    captured_log = self._logs(name) or captured_log
+                    captured_log = (
+                        server_process.log_text()
+                        if self.local_backend and server_process
+                        else self._logs(name)
+                    ) or captured_log
                     atomic_write_text(log_path, captured_log)
                 except BaseException as error:
                     finalization_errors.append(("server-log", error))
             if cleanup_required:
                 try:
-                    safe_cleanup_owned_container(name, self.command_runner)
+                    if self.local_backend:
+                        assert server_process is not None
+                        server_process.stop()
+                    else:
+                        safe_cleanup_owned_container(name, self.command_runner)
                 except BaseException as error:
-                    finalization_errors.append(("container-cleanup", error))
+                    finalization_errors.append(("server-cleanup", error))
             cleanup_errors = [
                 error
                 for stage, error in finalization_errors
-                if stage == "container-cleanup"
+                if stage in {"container-cleanup", "server-cleanup"}
             ]
             if primary_error is not None and cleanup_errors:
                 raise RuntimeError(
@@ -832,7 +921,7 @@ class BenchmarkRunner:
                 earlier_errors = [
                     error
                     for stage, error in finalization_errors
-                    if stage != "container-cleanup"
+                    if stage not in {"container-cleanup", "server-cleanup"}
                 ]
                 if earlier_errors:
                     raise RuntimeError(
@@ -863,7 +952,8 @@ class BenchmarkRunner:
                         "kv_dtype": variant.kv_dtype,
                         "skip_layers": list(variant.skip_layers),
                     },
-                    "image_digest": self.lock["image_digest"],
+                    "runtime_id": runtime_identity(self.lock),
+                    "backend": str(self.lock.get("backend", "docker")),
                     "model_revision": model_revision,
                     "telemetry": {
                         "path": telemetry_path.relative_to(
@@ -906,7 +996,8 @@ class BenchmarkRunner:
                     "kv_dtype": variant.kv_dtype,
                     "skip_layers": list(variant.skip_layers),
                 },
-                "image_digest": self.lock["image_digest"],
+                "runtime_id": runtime_identity(self.lock),
+                "backend": str(self.lock.get("backend", "docker")),
                 "model_revision": model_revision,
                 "capacity": asdict(capacity),
                 "aggregate": aggregate,

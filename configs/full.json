@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "full",
   "hardware": {
-    "driver": "535.230.02",
+    "driver": "580.173.02",
     "gpu_name": "NVIDIA RTX A6000",
     "compute_capability": "8.6",
     "vram_mib": 49140
@@ -34,7 +34,7 @@
     "final_depths": [0.1, 0.5, 0.9],
     "probe_seeds": [41, 42, 43],
     "final_seeds": [101, 202, 303],
-    "max_tokens": 24
+    "max_tokens": 96
   },
   "benchmark": {
     "input_lengths": [1024, 8192, 16384],
@@ -45,5 +45,5 @@
   "kv_cache_dtype": "fp8_e4m3",
   "kv_cache_memory": "16G",
   "seed": 42,
-  "calculate_kv_scales": true
+  "calculate_kv_scales": false
 }

@@ -16,9 +16,13 @@ from autokv.client import VllmClient, VllmHttpError, wait_until_ready
 from autokv.commands import (
     CommandResult,
     container_name,
+    local_server_command,
+    local_vllm_env,
     run_command,
+    runtime_identity,
     server_command,
 )
+from autokv.local_runtime import LocalVllmProcess
 from autokv.config import Profile
 from autokv.io import (
     append_jsonl,
@@ -178,7 +182,11 @@ def is_complete(
         return False
 
 
-def validate_container_command(output: str, variant: Variant) -> None:
+def validate_container_command(
+    output: str,
+    variant: Variant,
+    calculate_kv_scales: bool | None = None,
+) -> None:
     try:
         command = json.loads(output)
     except json.JSONDecodeError as exc:
@@ -197,7 +205,10 @@ def validate_container_command(output: str, variant: Variant) -> None:
     if exact_value("--kv-cache-dtype") != variant.kv_dtype:
         raise ValueError("container command KV dtype differs from the variant")
     scale_count = command.count("--calculate-kv-scales")
-    expected_scale_count = int(variant.kv_dtype == "fp8_e4m3")
+    expected_scale_count = int(
+        variant.kv_dtype == "fp8_e4m3"
+        and (calculate_kv_scales if calculate_kv_scales is not None else True)
+    )
     if scale_count != expected_scale_count:
         raise ValueError("container command has the wrong KV scale mode")
 
@@ -221,8 +232,31 @@ def validate_container_command(output: str, variant: Variant) -> None:
         )
 
 
+def validate_local_vllm_command(
+    output: str,
+    variant: Variant,
+    calculate_kv_scales: bool | None = None,
+) -> None:
+    """Validate the argv recorded for a directly launched vLLM server."""
+    try:
+        command = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ValueError("local vLLM command is not valid JSON") from exc
+    if not isinstance(command, list) or any(not isinstance(item, str) for item in command):
+        raise ValueError("local vLLM command must be a string array")
+    if len(command) < 2 or not command[0].endswith("/vllm") or command[1] != "serve":
+        raise ValueError("local vLLM command must invoke the project venv/bin/vllm serve")
+    validate_container_command(
+        json.dumps(command[2:]), variant, calculate_kv_scales
+    )
+
+
 def inspect_container_command(
-    name: str, variant: Variant, runner: Runner = run_command
+    name: str,
+    variant: Variant,
+    runner: Runner = run_command,
+    *,
+    calculate_kv_scales: bool | None = None,
 ) -> tuple[str, ...]:
     result = runner(
         ("docker", "inspect", "--format", "{{json .Config.Cmd}}", name),
@@ -230,7 +264,7 @@ def inspect_container_command(
     )
     if not result.ok:
         raise RuntimeError(f"cannot inspect actual container command: {name}")
-    validate_container_command(result.stdout, variant)
+    validate_container_command(result.stdout, variant, calculate_kv_scales)
     parsed = json.loads(result.stdout)
     return tuple(parsed)
 
@@ -381,6 +415,7 @@ def validate_experiment_rows(
     model_revision: str,
     backend: str,
     quality_mode: str,
+    runtime_backend: str = "docker",
 ) -> None:
     """Validate row schema plus every immutable experiment context field."""
     if quality_mode not in QUALITY_MODES:
@@ -401,12 +436,14 @@ def validate_experiment_rows(
         "schema_version": 1,
         "run_id": run_id,
         "config_id": canonical_config_id(variant),
-        "image_digest": image_digest,
         "model_revision": model_revision,
         "backend": backend,
         "kv_dtype": variant.kv_dtype,
         "skip_layers": list(variant.skip_layers),
     }
+    expected_context[
+        "runtime_id" if runtime_backend == "local_vllm" else "image_digest"
+    ] = image_digest
     seen: set[str] = set()
     for row in rows:
         sample_id = row.get("sample_id")
@@ -491,9 +528,18 @@ class ExperimentRunner:
             raise ValueError("force config ID must be 12 lowercase hex characters")
         self.force_config_id = force_config_id
         self._forced_keys: set[tuple[str, str, str]] = set()
-        for key in ("image_ref", "image_digest", "model_revision"):
+        required = (
+            ("runtime_id", "python", "model_revision")
+            if lock.get("backend") == "local_vllm"
+            else ("image_ref", "image_digest", "model_revision")
+        )
+        for key in required:
             if not isinstance(lock.get(key), str) or not lock[key]:
                 raise ValueError(f"environment lock is missing {key}")
+
+    @property
+    def local_backend(self) -> bool:
+        return self.lock.get("backend") == "local_vllm"
 
     @property
     def force_applied(self) -> bool:
@@ -537,10 +583,11 @@ class ExperimentRunner:
             variant,
             cases,
             run_id=run_id,
-            image_digest=str(self.lock["image_digest"]),
+            image_digest=runtime_identity(self.lock),
             model_revision=str(self.lock["model_revision"]),
             backend=self.profile.model.attention_backend,
             quality_mode=self.quality_mode,
+            runtime_backend=str(self.lock.get("backend", "docker")),
         )
 
     @staticmethod
@@ -634,17 +681,27 @@ class ExperimentRunner:
         if not completed_ids.issubset(expected_ids):
             raise ValueError(f"partial artifact contains unexpected sample IDs: {artifact}")
 
-        image_ref = str(self.lock["image_ref"])
         model_revision = str(self.lock["model_revision"])
-        argv = server_command(
-            self.profile,
-            image_ref,
-            variant,
-            self.project_root,
-            port,
-            run_id,
-            model_revision,
-        )
+        if self.local_backend:
+            argv = local_server_command(
+                self.profile,
+                str(self.lock["vllm"]),
+                variant,
+                self.project_root,
+                port,
+                model_revision,
+            )
+        else:
+            image_ref = str(self.lock["image_ref"])
+            argv = server_command(
+                self.profile,
+                image_ref,
+                variant,
+                self.project_root,
+                port,
+                run_id,
+                model_revision,
+            )
         command_record = {
             "argv": list(argv),
             "variant": {
@@ -652,37 +709,65 @@ class ExperimentRunner:
                 "kv_dtype": variant.kv_dtype,
                 "skip_layers": list(variant.skip_layers),
             },
-            "image_ref": image_ref,
+            "backend": str(self.lock.get("backend", "docker")),
+            "runtime_id": runtime_identity(self.lock),
             "model_revision": model_revision,
             "quality_mode": self.quality_mode,
         }
         atomic_write_json(command_path, command_record)
 
         name = container_name(run_id, variant)
+        server_process: LocalVllmProcess | None = None
         started = False
         cleanup_required = False
         completed = False
         captured_log = ""
         try:
-            safe_remove_stale_container(name, self.command_runner)
-            cleanup_required = True
-            start_result = self.command_runner(argv, timeout=120)
-            if not start_result.ok:
-                raise RuntimeError(
-                    f"docker run failed for {variant.name}: "
-                    f"returncode={start_result.returncode}; "
-                    f"stderr={start_result.stderr[-1000:] or '<empty>'}"
+            if self.local_backend:
+                server_process = LocalVllmProcess.start(
+                    argv,
+                    log_path,
+                    cwd=self.project_root,
+                    env=local_vllm_env(self.lock),
                 )
+                cleanup_required = True
+            else:
+                safe_remove_stale_container(name, self.command_runner)
+                cleanup_required = True
+                start_result = self.command_runner(argv, timeout=120)
+                if not start_result.ok:
+                    raise RuntimeError(
+                        f"docker run failed for {variant.name}: "
+                        f"returncode={start_result.returncode}; "
+                        f"stderr={start_result.stderr[-1000:] or '<empty>'}"
+                    )
             started = True
             client = self.client_factory(
                 f"http://127.0.0.1:{port}", self.profile.model.model_id
             )
             wait_until_ready(client, timeout_seconds=900, interval_seconds=2)
-            command_record["inspected_argv"] = list(
-                inspect_container_command(name, variant, self.command_runner)
-            )
+            if self.local_backend:
+                command_record["inspected_argv"] = list(argv)
+                validate_local_vllm_command(
+                    json.dumps(argv),
+                    variant,
+                    self.profile.calculate_kv_scales,
+                )
+            else:
+                command_record["inspected_argv"] = list(
+                    inspect_container_command(
+                        name,
+                        variant,
+                        self.command_runner,
+                        calculate_kv_scales=self.profile.calculate_kv_scales,
+                    )
+                )
             atomic_write_json(command_path, command_record)
-            captured_log = self._logs(name)
+            captured_log = (
+                server_process.log_text()
+                if self.local_backend and server_process
+                else self._logs(name)
+            )
             validate_server_log(
                 captured_log, variant, num_layers=self.profile.model.num_layers
             )
@@ -740,13 +825,12 @@ class ExperimentRunner:
                     if isinstance(usage, Mapping)
                     else None
                 )
-                append_jsonl(
-                    artifact,
-                    {
+                row = {
                         "schema_version": 1,
                         "run_id": run_id,
                         "config_id": canonical_config_id(variant),
-                        "image_digest": self.lock["image_digest"],
+                        "runtime_id": runtime_identity(self.lock),
+                        "runtime_backend": str(self.lock.get("backend", "docker")),
                         "model_revision": model_revision,
                         "backend": self.profile.model.attention_backend,
                         "kv_dtype": variant.kv_dtype,
@@ -766,27 +850,37 @@ class ExperimentRunner:
                         "ttft_ms": None,
                         "e2e_ms": elapsed_ms,
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+                    }
+                if not self.local_backend:
+                    row["image_digest"] = runtime_identity(self.lock)
+                append_jsonl(artifact, row)
             completed = True
         finally:
             primary_error = sys.exc_info()[1]
             finalization_errors: list[tuple[str, BaseException]] = []
             if started:
                 try:
-                    captured_log = self._logs(name) or captured_log
+                    captured_log = (
+                        server_process.log_text()
+                        if self.local_backend and server_process
+                        else self._logs(name)
+                    ) or captured_log
                     atomic_write_text(log_path, captured_log)
                 except BaseException as error:
                     finalization_errors.append(("server-log", error))
             if cleanup_required:
                 try:
-                    safe_cleanup_owned_container(name, self.command_runner)
+                    if self.local_backend:
+                        assert server_process is not None
+                        server_process.stop()
+                    else:
+                        safe_cleanup_owned_container(name, self.command_runner)
                 except BaseException as error:
-                    finalization_errors.append(("container-cleanup", error))
+                    finalization_errors.append(("server-cleanup", error))
             cleanup_errors = [
                 error
                 for stage, error in finalization_errors
-                if stage == "container-cleanup"
+                if stage in {"container-cleanup", "server-cleanup"}
             ]
             if primary_error is not None and cleanup_errors:
                 raise RuntimeError(
@@ -797,7 +891,7 @@ class ExperimentRunner:
                 earlier_errors = [
                     error
                     for stage, error in finalization_errors
-                    if stage != "container-cleanup"
+                    if stage not in {"container-cleanup", "server-cleanup"}
                 ]
                 if earlier_errors:
                     raise RuntimeError(

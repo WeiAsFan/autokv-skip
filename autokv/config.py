@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-EXPECTED_DRIVER = "535.230.02"
+EXPECTED_DRIVER = "580.173.02"
 EXPECTED_IMAGES = (
     "vllm/vllm-openai:v0.26.0",
     "vllm/vllm-openai:v0.19.1",
@@ -133,7 +133,7 @@ class Profile:
                 "final_depths": [0.1, 0.5, 0.9],
                 "probe_seeds": [42] if not full else [41, 42, 43],
                 "final_seeds": [101, 202] if not full else [101, 202, 303],
-                "max_tokens": 24,
+                "max_tokens": 96,
             },
             "benchmark": {
                 "input_lengths": [1024, 8192, 16384],
@@ -144,7 +144,7 @@ class Profile:
             "kv_cache_dtype": "fp8_e4m3",
             "kv_cache_memory": "16G",
             "seed": 42,
-            "calculate_kv_scales": True,
+            "calculate_kv_scales": False,
         }
 
     @classmethod
