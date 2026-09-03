@@ -10,7 +10,7 @@ class ProfileTests(unittest.TestCase):
     def test_rejects_non_locked_driver(self):
         data = Profile.default_dict("quick")
         data["hardware"]["driver"] = "550.0"
-        with self.assertRaisesRegex(ValueError, "535.230.02"):
+        with self.assertRaisesRegex(ValueError, "580.173.02"):
             Profile.from_dict(data)
 
     def test_accepts_approved_quick_profile(self):
@@ -32,7 +32,7 @@ class ProfileTests(unittest.TestCase):
             ),
             (
                 "calculate_kv_scales",
-                lambda data: data.__setitem__("calculate_kv_scales", False),
+                lambda data: data.__setitem__("calculate_kv_scales", True),
             ),
         )
         for label, mutate in changes:

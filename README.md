@@ -36,11 +36,17 @@ BF16 与全 FP8 的平均 Q 差只有 `3.8758e-5`，配对 95% CI 为 `[-8.175e-
 
 本次 Auto-4 相对 BF16 的请求吞吐变化在 6 个场景中为 `-0.861%` 到 `+19.607%`，相对全 FP8 大多慢约 `1.2%–3.9%`。但是本次运行开启了 prefix caching，最高命中率约 50%，且同一 server 内的后续重复明显受缓存热身影响。因此这些性能数值只作为暂定证据；正式性能结论必须在关闭 prefix caching 后重跑。
 
-## 可复现性状态
+## v1.0 可复现性状态
 
-结果已在 GitHub 提交 `096697c647603aaf871f1babf3d2e8b1ceb37c1b` 中归档，但结果 manifest 记录的运行源码提交 `2c6a4e1ac96e9835a6af2ad450cb9dfa269e4953` 尚未发布到 GitHub。当前仓库中的旧源码不能被当成本次运行源码。
+结果已在 GitHub 提交 `096697c647603aaf871f1babf3d2e8b1ceb37c1b` 中归档。结果 manifest 记录的运行源码提交为 `2c6a4e1ac96e9835a6af2ad450cb9dfa269e4953`；其 20 项受控源码已逐项按 manifest 校验，并以 `b2bb7759e687cdb61fc4ea750ac4bb74ae593f6a` 合入 `main`。合入后源码树 SHA-256 仍为 `64ad8dcaf4f36cf9f3b9575a0a324b656d3ed06f314907226ca9709154542c70`，与运行 manifest 完全一致。
 
-在满足 [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 前，本项目可以声称结果归档内部可校验，但不能声称第三方已经能够从仓库精确复现该运行。
+原始运行提交号与 `main` 上的发布提交号不同，但受控源码内容和树 hash 相同；复现实验时应使用上述 `main` 发布提交，并同时保留这个映射事实。
+
+## v2.0 实现状态
+
+`v2.0` 已实现“质量缺口驱动的混合精度自动选择”：45 样本三层 Quality v2、可选 BF16-only pilot、P32/P0 端点判断、条件式 8 组/8 单层搜索、P2/P4/P8 早停、held-out 和 3 个同预算随机对照。所有 v2 server 显式关闭 prefix caching，并用实际日志和服务端 prompt token 回验。
+
+当前仅完成代码与本地纯函数/编排验证，尚未在目标 A6000 服务器生成正式数据或产生 v2 GPU 结果。远程执行见 [v2.0 阶段 2–4 远程执行手册](docs/v2.0/RUNBOOK.zh-CN.md)。
 
 ## 项目边界
 
@@ -55,6 +61,7 @@ BF16 与全 FP8 的平均 Q 差只有 `3.8758e-5`，配对 95% CI 为 `[-8.175e-
 - [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md)：把结果与精确源码提交闭环的必做事项。
 - [v2.0 设计文档](docs/v2.0/DESIGN.zh-CN.md)：质量缺口驱动的 `P_k` 自动选择、三层数据与验证规则。
 - [v2.0 阶段 2–4 执行计划](docs/v2.0/EXECUTION-PLAN.zh-CN.md)：规模受控的实现、GPU 运行和精简证据计划。
+- [v2.0 阶段 2–4 远程执行手册](docs/v2.0/RUNBOOK.zh-CN.md)：LongBench 固化、可选 pilot、正式运行、恢复与归档命令。
 - [v1.0 运行前服务器手册](RUNBOOK.zh-CN.md)：历史操作方案，不是本次运行的精确复现指南。
 - [v1.0 运行前技术规格](docs/superpowers/specs/2026-08-24-autokv-skip-design.md)：历史设计意图。
 - [v1.0 运行前实现计划](docs/superpowers/plans/2026-08-24-autokv-skip-implementation.md)：历史实现计划。

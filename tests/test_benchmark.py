@@ -10,6 +10,7 @@ from autokv.benchmark import (
     Capacity,
     build_benchmark_matrix,
     capacity_validation,
+    extract_performance_metrics,
     parse_capacity_tokens,
 )
 from autokv.commands import CommandResult
@@ -116,6 +117,18 @@ class BenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "KV cache size"):
             parse_capacity_tokens("server ready")
 
+    def test_benchmark_result_requires_completed_requests(self):
+        with self.assertRaisesRegex(ValueError, "completed no requests"):
+            extract_performance_metrics(
+                {"completed": 0, "failed": 20, "request_throughput": 0.0}
+            )
+
+    def test_benchmark_result_rejects_failed_requests(self):
+        with self.assertRaisesRegex(ValueError, "contains failed requests"):
+            extract_performance_metrics(
+                {"completed": 19, "failed": 1, "request_throughput": 1.0}
+            )
+
     def test_quick_matrix_has_six_scenarios(self):
         profile = Profile.from_dict(Profile.default_dict("quick"))
         cases = build_benchmark_matrix(profile)
@@ -149,7 +162,6 @@ class BenchmarkTests(unittest.TestCase):
                     "FLASHINFER",
                     "--kv-cache-dtype",
                     "fp8_e4m3",
-                    "--calculate-kv-scales",
                     "--kv-cache-dtype-skip-layers",
                     "2",
                     "7",
@@ -216,6 +228,8 @@ class BenchmarkTests(unittest.TestCase):
                     result_path.write_text(
                         json.dumps(
                             {
+                                "completed": 1,
+                                "failed": 0,
                                 "request_throughput": 2.5,
                                 "output_throughput": 30.0,
                                 "median_ttft_ms": 123.0,
@@ -342,7 +356,6 @@ class BenchmarkTests(unittest.TestCase):
                     "FLASHINFER",
                     "--kv-cache-dtype",
                     "fp8_e4m3",
-                    "--calculate-kv-scales",
                 ]
             )
 
@@ -389,7 +402,9 @@ class BenchmarkTests(unittest.TestCase):
                     result_path = root / relative / filename
                     result_path.parent.mkdir(parents=True, exist_ok=True)
                     result_path.write_text(
-                        json.dumps({"request_throughput": 1.0}),
+                        json.dumps(
+                            {"completed": 1, "failed": 0, "request_throughput": 1.0}
+                        ),
                         encoding="utf-8",
                     )
                 return command_result(argv)

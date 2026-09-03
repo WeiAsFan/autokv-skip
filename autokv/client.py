@@ -119,6 +119,22 @@ class VllmClient:
             self.completion_payload(self.model_id, prompt, max_tokens),
         )
 
+    def chat_complete(self, user_prompt: str, max_tokens: int) -> Mapping[str, Any]:
+        """使用服务端冻结的 chat template 生成，供 v2 已计数消息使用。"""
+        return self._request_json(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": self.model_id,
+                "messages": [{"role": "user", "content": user_prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0,
+                "top_p": 1,
+                "seed": 42,
+                "stream": False,
+            },
+        )
+
     def echo_logprobs(self, prompt: str) -> Mapping[str, Any]:
         payload = self.completion_payload(self.model_id, prompt, 0)
         payload.update({"echo": True, "logprobs": 1})

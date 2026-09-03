@@ -31,6 +31,24 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"count": len(body["prompt"].split()), "tokens": [1, 2]})
         elif self.path == "/v1/completions":
             self._json({"choices": [{"text": "answer"}]})
+        elif self.path == "/v1/chat/completions":
+            if body != {
+                "model": "model",
+                "messages": [{"role": "user", "content": "question"}],
+                "max_tokens": 12,
+                "temperature": 0,
+                "top_p": 1,
+                "seed": 42,
+                "stream": False,
+            }:
+                self.send_error(400)
+                return
+            self._json(
+                {
+                    "choices": [{"message": {"content": "chat answer"}}],
+                    "usage": {"prompt_tokens": 7},
+                }
+            )
         else:
             self.send_error(404)
 
@@ -61,6 +79,9 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.tokenize("one two three"), 3)
         response = client.complete("prompt", 24)
         self.assertEqual(response["choices"][0]["text"], "answer")
+        chat = client.chat_complete("question", 12)
+        self.assertEqual(chat["choices"][0]["message"]["content"], "chat answer")
+        self.assertEqual(chat["usage"]["prompt_tokens"], 7)
 
 
 if __name__ == "__main__":

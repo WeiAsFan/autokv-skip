@@ -32,7 +32,6 @@ FP8_CONTAINER_COMMAND = json.dumps(
         "FLASHINFER",
         "--kv-cache-dtype",
         "fp8_e4m3",
-        "--calculate-kv-scales",
     ]
 )
 
@@ -186,6 +185,26 @@ class ExperimentTests(unittest.TestCase):
             ),
             Variant.bf16(),
         )
+        no_scale_command = json.dumps(
+            [
+                "--attention-backend",
+                "FLASHINFER",
+                "--kv-cache-dtype",
+                "fp8_e4m3",
+                "--kv-cache-dtype-skip-layers",
+                "2",
+                "7",
+                "18",
+                "29",
+            ]
+        )
+        validate_container_command(
+            no_scale_command, variant, calculate_kv_scales=False
+        )
+        with self.assertRaisesRegex(ValueError, "wrong KV scale mode"):
+            validate_container_command(
+                command, variant, calculate_kv_scales=False
+            )
 
     def test_safe_stop_refuses_foreign_container(self):
         calls = []

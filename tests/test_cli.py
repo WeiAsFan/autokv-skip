@@ -130,6 +130,9 @@ class CliTests(unittest.TestCase):
             "run",
             "status",
             "diagnose",
+            "v2-freeze-data",
+            "v2-run",
+            "v2-pilot",
         ):
             self.assertIn(command, result.stdout)
         probe_help = run_cli("probe", "--help")
@@ -320,7 +323,7 @@ class CliTests(unittest.TestCase):
                         "image_digest": "sha256:" + "f" * 64,
                         "model_revision": "a" * 40,
                         "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
-                        "host": {"driver": "535.230.02"},
+                        "host": {"driver": "580.173.02"},
                     }
                 ),
                 encoding="utf-8",
@@ -363,7 +366,7 @@ class CliTests(unittest.TestCase):
                         "image_digest": image_digest,
                         "model_revision": model_revision,
                         "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
-                        "host": {"driver": "535.230.02"},
+                        "host": {"driver": "580.173.02"},
                     }
                 ),
                 encoding="utf-8",
@@ -431,7 +434,6 @@ class CliTests(unittest.TestCase):
                     "GPU KV cache size: 233,104 tokens",
                 ]
                 if variant.kv_dtype == "fp8_e4m3":
-                    argv.append("--calculate-kv-scales")
                     log_lines.append(
                         "Using fp8_e4m3 data type to store kv cache."
                     )

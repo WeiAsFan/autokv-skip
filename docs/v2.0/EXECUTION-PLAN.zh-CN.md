@@ -1,10 +1,21 @@
 # AutoKV-Skip v2.0 阶段 2–4 执行计划
 
-状态：待执行
+状态：阶段 2–4 代码已实现，待目标服务器冻结数据并执行真实 GPU 实验
 
 日期：2026-09-02
 
 依据：[v2.0 设计文档](DESIGN.zh-CN.md)
+
+实现与远程操作入口：[v2.0 阶段 2–4 远程执行手册](RUNBOOK.zh-CN.md)
+
+## 实现状态（2026-09-03）
+
+- 已实现唯一质量配置、三类确定性合成生成器、固定 revision 的 LongBench-E 导出/抽样和真实 tokenizer/chat template 长度控制；
+- 已实现 Easy 命中、Hard 集合 F1、LongBench QA F1、三层等权聚合和分层配对 bootstrap；
+- 已实现可选的 9 请求 BF16-only pilot、端点缺口规则、8 组/8 单层搜索、P2/P4/P8 早停与 3 个同预算随机对照；
+- 已实现显式 `--no-enable-prefix-caching`、日志正向证明、服务端 prompt token 回验和策略级恢复；
+- 已用纯函数及两条完整编排路径验证 4 启动/90 请求与 25 启动/621 请求边界；
+- 尚未在目标服务器生成正式 45 样本，也尚未产生任何 v2.0 P0 或 P* 结果。文中的实验完成复选框只能由真实服务器产物关闭。
 
 ## 1. 本计划的范围
 
@@ -20,8 +31,8 @@
 
 以下事项是阶段 2 的入口条件，不另建一串 gate：
 
-- [ ] 按 [v1.0 对应源码发布要求](../v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 发布 `2c6a4e1...`，然后从该真实修复版源码开始开发 v2.0；
-- [ ] v2.0 开发提交已推送到 GitHub，实验服务器检出的 commit 可公开访问，工作区干净；
+- [x] 已按 [v1.0 对应源码发布要求](../v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 将运行 manifest 的受控源码内容合入 `b2bb775...`，并验证源码树 SHA-256 完全一致；
+- [x] v2.0 阶段 2–4 实现已完成并提交；正式实验前，服务器必须确认当前 `v2.0` 分支已经推送、该提交可公开取得且工作区干净；
 - [ ] 实验服务器仍能启动 v1.0 已验证的本地 vLLM runtime；若 runtime 改变，记录新身份，但不把不同 runtime 的结果混表；
 - [ ] vLLM 实际启动日志能够证明 `enable_prefix_caching=False`；
 - [ ] KV scale 方案已经选定并写入唯一配置，在看到 `P_0` 质量结果后不得改变；

@@ -2211,6 +2211,58 @@ def _emit(payload: Mapping[str, Any], json_output: bool) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _freeze_v2_data(root: Path, source_dir: str) -> Mapping[str, Any]:
+    """用已有本地 vLLM 环境中的 tokenizer 冻结一次 v2 数据。"""
+    from autokv.v2_config import V2_CONFIG_RELATIVE_PATH, V2_DATA_RELATIVE_ROOT, load_v2_config
+    from autokv.v2_data import (
+        TransformersPromptCodec,
+        freeze_v2_dataset,
+        load_frozen_v2_dataset,
+    )
+
+    config_path = root / V2_CONFIG_RELATIVE_PATH
+    config = load_v2_config(config_path)
+    profile, _ = _load_named_profile(root, config.profile)
+    lock = _load_lock(root, profile)
+    if lock.get("backend") != "local_vllm":
+        raise ValueError("v2-freeze-data 当前只支持项目已验证的 local_vllm 环境")
+    if lock.get("model_revision") != config.model_revision:
+        raise ValueError("环境锁模型 revision 与 v2 配置不一致")
+    output_root = root / V2_DATA_RELATIVE_ROOT
+    manifest_path = output_root / "dataset-manifest.json"
+    if manifest_path.is_file():
+        manifest, calibration, heldout = load_frozen_v2_dataset(
+            config, output_root, config_path=config_path
+        )
+        return {
+            "complete": True,
+            "reused": True,
+            "dataset_sha256": manifest["dataset_sha256"],
+            "calibration_rows": len(calibration),
+            "heldout_rows": len(heldout),
+            "manifest_path": manifest_path.relative_to(root).as_posix(),
+        }
+    source_root = Path(source_dir)
+    if not source_root.is_absolute():
+        source_root = root / source_root
+    codec = TransformersPromptCodec(Path(str(lock["model_path"])))
+    manifest = freeze_v2_dataset(
+        config,
+        codec,
+        source_root.resolve(),
+        output_root,
+        config_path=config_path,
+    )
+    return {
+        "complete": True,
+        "reused": False,
+        "dataset_sha256": manifest["dataset_sha256"],
+        "calibration_rows": manifest["splits"]["calibration"]["rows"],
+        "heldout_rows": manifest["splits"]["heldout"]["rows"],
+        "manifest_path": manifest_path.relative_to(root).as_posix(),
+    }
+
+
 def _add_common(
     parser: argparse.ArgumentParser, *, port: bool = False, force: bool = False
 ) -> None:
@@ -2265,12 +2317,47 @@ def build_parser() -> argparse.ArgumentParser:
             port=name in gpu_port_commands,
             force=name in force_commands,
         )
+    v2_data_parser = subparsers.add_parser(
+        "v2-freeze-data",
+        help="用冻结 tokenizer 与本地 LongBench 源文件生成 Quality v2 数据",
+    )
+    v2_data_parser.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    v2_data_parser.add_argument(
+        "--source-dir",
+        default="data/v2/source/LongBench",
+        help="含 source-manifest.json、qasper_e.jsonl、hotpotqa_e.jsonl 的目录",
+    )
+    v2_data_parser.add_argument("--json", action="store_true")
+    v2_run_parser = subparsers.add_parser(
+        "v2-run",
+        help="执行 Quality v2 端点判断、条件搜索与 held-out 验证",
+    )
+    v2_run_parser.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    v2_run_parser.add_argument("--port", type=int, default=8000)
+    v2_run_parser.add_argument("--json", action="store_true")
+    v2_pilot_parser = subparsers.add_parser(
+        "v2-pilot",
+        help="可选：用 9 条 BF16 Hard 样本预注册难度档位",
+    )
+    v2_pilot_parser.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    v2_pilot_parser.add_argument("--port", type=int, default=8000)
+    v2_pilot_parser.add_argument("--json", action="store_true")
     return parser
 
 
 def _dispatch(args: argparse.Namespace) -> Mapping[str, Any]:
     root = _resolved_root(args.project_root)
     command = args.command
+    if command == "v2-freeze-data":
+        return _freeze_v2_data(root, args.source_dir)
+    if command == "v2-run":
+        from autokv.v2_pipeline import run_v2_pipeline
+
+        return run_v2_pipeline(root, port=args.port)
+    if command == "v2-pilot":
+        from autokv.v2_pipeline import run_v2_pilot
+
+        return run_v2_pilot(root, port=args.port)
     if command == "doctor":
         return _doctor(root, args.profile)
     if command == "lock-image":

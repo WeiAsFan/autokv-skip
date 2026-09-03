@@ -100,12 +100,16 @@ class DocumentationTests(unittest.TestCase):
         for nonexistent in ("capacity.csv", "quality.csv", "performance.csv"):
             self.assertNotIn(f"从 {nonexistent} 读取", text)
 
-    def test_readme_records_current_run_and_reproducibility_limit(self):
+    def test_readme_records_current_run_and_source_identity_mapping(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("8181c9a332ef6e9c", text)
         self.assertIn("580.173.02", text)
         self.assertIn("运行源码提交", text)
-        self.assertIn("尚未发布到 GitHub", text)
+        self.assertIn("b2bb7759e687cdb61fc4ea750ac4bb74ae593f6a", text)
+        self.assertIn(
+            "64ad8dcaf4f36cf9f3b9575a0a324b656d3ed06f314907226ca9709154542c70",
+            text,
+        )
         self.assertIn("v1.0 统一项目事实", text)
 
 

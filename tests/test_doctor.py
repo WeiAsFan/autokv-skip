@@ -21,14 +21,14 @@ from autokv.doctor import (
 
 class DoctorTests(unittest.TestCase):
     def test_parses_expected_a6000(self):
-        facts = parse_gpu_csv("NVIDIA RTX A6000, 535.230.02, 49140, 8.6\n")
-        self.assertEqual(facts.driver, "535.230.02")
+        facts = parse_gpu_csv("NVIDIA RTX A6000, 580.173.02, 49140, 8.6\n")
+        self.assertEqual(facts.driver, "580.173.02")
         self.assertEqual(facts.compute_capability, "8.6")
         self.assertEqual(facts.vram_mib, 49140)
 
     def test_rejects_driver_change(self):
         facts = parse_gpu_csv("NVIDIA RTX A6000, 550.54.15, 49140, 8.6\n")
-        gates = validate_host(facts, expected_driver="535.230.02")
+        gates = validate_host(facts, expected_driver="580.173.02")
         self.assertFalse(all(gate.ok for gate in gates))
         driver_gate = next(gate for gate in gates if gate.name == "driver")
         self.assertIn("不要修改驱动", driver_gate.remediation)
@@ -112,7 +112,7 @@ class DoctorTests(unittest.TestCase):
             joined = " ".join(argv)
             if argv[0] == "nvidia-smi":
                 return result(
-                    argv, stdout="NVIDIA RTX A6000, 535.230.02, 49140, 8.6\n"
+                    argv, stdout="NVIDIA RTX A6000, 580.173.02, 49140, 8.6\n"
                 )
             if tuple(argv[:2]) == ("docker", "version"):
                 return result(argv, stdout="27.0.0\n")

@@ -31,6 +31,7 @@ REQUIRED_FLAGS = (
     "--kv-cache-dtype-skip-layers",
     "--kv-cache-memory-bytes",
     "--calculate-kv-scales",
+    "--no-enable-prefix-caching",
 )
 
 

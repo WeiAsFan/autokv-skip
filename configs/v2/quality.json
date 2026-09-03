@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "name": "quality-v2",
+  "model": {
+    "id": "mistralai/Mistral-7B-Instruct-v0.3",
+    "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+    "profile": "full",
+    "num_layers": 32,
+    "max_model_len": 32768
+  },
+  "runtime": {
+    "attention_backend": "FLASHINFER",
+    "kv_cache_dtype": "fp8_e4m3",
+    "kv_cache_memory": "16G",
+    "calculate_kv_scales": false,
+    "enable_prefix_caching": false,
+    "seed": 42
+  },
+  "data": {
+    "target_lengths": [8192, 16384, 24576],
+    "input_tolerance_tokens": 32,
+    "easy": {
+      "depth": 0.5,
+      "calibration_seed": 101,
+      "heldout_seed": 202,
+      "max_tokens": 96
+    },
+    "hard": {
+      "families": [
+        "multi_key_value",
+        "variable_tracking",
+        "aggregation_extraction"
+      ],
+      "seeds": {
+        "calibration": [41, 42],
+        "heldout": [43]
+      },
+      "difficulty": "standard",
+      "max_tokens": 128,
+      "pilot": {
+        "seed": 41,
+        "max_requests": 9,
+        "score_floor": 0.6,
+        "score_ceiling": 0.98
+      },
+      "parameters": {
+        "multi_key_query_count": 4,
+        "variable_count": 8,
+        "variable_steps": 24,
+        "aggregation_label_count": 6,
+        "aggregation_top_k": 3
+      }
+    },
+    "natural": {
+      "repository": "THUDM/LongBench",
+      "source_revision": "92b6c5fbfb0c97b91e92d9ef79802f95ce74b05e",
+      "datasets": ["qasper_e", "hotpotqa_e"],
+      "source_length_buckets": [4000, 8000, null],
+      "per_bucket_per_split": 1,
+      "max_input_tokens": 24576,
+      "max_tokens": {
+        "qasper_e": 128,
+        "hotpotqa_e": 32
+      }
+    }
+  },
+  "selection": {
+    "candidate_budgets": [0, 2, 4, 8, 32],
+    "group_size": 4,
+    "top_groups": 2,
+    "random_seeds": [11, 23, 37]
+  },
+  "thresholds": {
+    "epsilon_global": 0.01,
+    "epsilon_tier": 0.02
+  },
+  "scoring": {
+    "version": "autokv-v2-score-v1",
+    "bootstrap_samples": 2000,
+    "bootstrap_seed": 20260902
+  }
+}

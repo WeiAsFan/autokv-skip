@@ -272,6 +272,7 @@ def server_command(
             str(port),
             "--kv-cache-dtype",
             variant.kv_dtype,
+            "--no-enable-prefix-caching",
         )
     )
     if variant.kv_dtype == "fp8_e4m3" and profile.calculate_kv_scales:
@@ -342,6 +343,7 @@ def local_server_command(
         str(port),
         "--kv-cache-dtype",
         variant.kv_dtype,
+        "--no-enable-prefix-caching",
     ]
     if variant.kv_dtype == "fp8_e4m3" and profile.calculate_kv_scales:
         argv.append("--calculate-kv-scales")
