@@ -1,0 +1,45 @@
+{
+  "chat_template_sha256": "e16746b40344d6c5b5265988e0328a0bf7277be86f1c335156eae07e29c82826",
+  "config_sha256": "a63fc9ec826364eef97a3e6db39d1b627f26833ac0d889353d9fc52ebfb1f19c",
+  "dataset_sha256": "0b80c20794033c409f14bd4e8ebfdf8dabf1131b820577dc0c2f78d9d96d094a",
+  "generator": "autokv-v2-data-v1",
+  "longbench_revision": "92b6c5fbfb0c97b91e92d9ef79802f95ce74b05e",
+  "model_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "rows": 45,
+  "schema_version": 2,
+  "source": {
+    "datasets": [
+      "qasper_e",
+      "hotpotqa_e"
+    ],
+    "files": {
+      "hotpotqa_e.jsonl": "26a90a291cca5b2515bf466c6c3d1f57d8a4e67b0cf5aa39e1834913a15e6309",
+      "qasper_e.jsonl": "97d95c01221a17a2ce51f9180d65a671bf2998504a2ff0cccffe97e9b08444d8"
+    },
+    "repository": "THUDM/LongBench",
+    "revision": "92b6c5fbfb0c97b91e92d9ef79802f95ce74b05e",
+    "rows": {
+      "hotpotqa_e": 300,
+      "qasper_e": 224
+    },
+    "split": "test"
+  },
+  "source_identity_sha256": "180201ca8eb6e2ccfe7830a995a672806dbee3cea4b9cbc9f0ef5c8a3f484484",
+  "splits": {
+    "calibration": {
+      "path": "calibration.jsonl",
+      "rows": 27,
+      "sha256": "0ec26ab631ab3f1d4947886e41508f1632c1e75cf94f0706719aacc7d3d942df"
+    },
+    "heldout": {
+      "path": "heldout.jsonl",
+      "rows": 18,
+      "sha256": "6b37d5b0932e2430eb5b8102d461178d0e9bba8f9a97bafffee4d4d42c52200e"
+    }
+  },
+  "tier_rows": {
+    "easy": 6,
+    "hard": 27,
+    "natural": 12
+  }
+}
