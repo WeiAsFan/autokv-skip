@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from collections import Counter
@@ -143,6 +144,24 @@ class V2DataTests(unittest.TestCase):
             )
             self.assertEqual(loaded["dataset_sha256"], first["dataset_sha256"])
             self.assertEqual((len(calibration), len(heldout)), (27, 18))
+
+    def test_published_dataset_accepts_crlf_but_rejects_content_changes(self):
+        from autokv.cli import _freeze_v2_data
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            shutil.copytree(ROOT / "configs", root / "configs")
+            shutil.copytree(ROOT / "data/v2/quality", root / "data/v2/quality")
+            config_path = root / "configs/v2/quality.json"
+            calibration_path = root / "data/v2/quality/calibration.jsonl"
+            for path in (config_path, calibration_path):
+                path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+            result = _freeze_v2_data(root, "missing-source")
+            self.assertTrue(result["reused"])
+            self.assertEqual((result["calibration_rows"], result["heldout_rows"]), (27, 18))
+            calibration_path.write_bytes(calibration_path.read_bytes().replace(b'"prompt":', b'"changed_prompt":', 1))
+            with self.assertRaisesRegex(ValueError, "calibration hash"):
+                _freeze_v2_data(root, "missing-source")
 
 
 if __name__ == "__main__":

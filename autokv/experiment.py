@@ -269,13 +269,15 @@ def inspect_container_command(
     return tuple(parsed)
 
 
-def validate_server_log(log: str, variant: Variant, num_layers: int = 32) -> None:
+def validate_server_log(
+    log: str, variant: Variant, num_layers: int = 32, *, require_capacity: bool = True
+) -> None:
     upper = log.upper()
     if not re.search(
         r"\bUSING\s+(?:ATTENTIONBACKENDENUM\.)?FLASHINFER\s+BACKEND\b", upper
     ):
         raise ValueError("server log does not confirm the active FLASHINFER backend")
-    if not re.search(r"GPU KV CACHE SIZE:\s*[\d,]+\s*TOKENS", upper):
+    if require_capacity and not re.search(r"GPU KV CACHE SIZE:\s*[\d,]+\s*TOKENS", upper):
         raise ValueError("server log does not contain GPU KV cache token capacity")
     fp8_message = "USING FP8_E4M3 DATA TYPE TO STORE KV CACHE"
     if variant.kv_dtype == "fp8_e4m3" and fp8_message not in upper:

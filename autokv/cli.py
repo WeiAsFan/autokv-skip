@@ -29,6 +29,7 @@ from autokv.benchmark import (
 )
 from autokv.client import VllmHttpError
 from autokv.commands import (
+    CommandResult,
     bench_command,
     format_command,
     local_bench_command,
@@ -347,13 +348,19 @@ def _source_identity(source_root: Path = REPOSITORY_ROOT) -> dict[str, Any]:
         tree.update(digest.encode("ascii"))
         tree.update(b"\n")
 
-    commit_result = run_command(
+    def optional_git(argv: Sequence[str], *, timeout: int) -> CommandResult:
+        try:
+            return run_command(argv, timeout=timeout)
+        except OSError:
+            return CommandResult(tuple(argv), 127, "", "Git 不可用", 0.0)
+
+    commit_result = optional_git(
         ("git", "-C", str(source_root), "rev-parse", "HEAD"), timeout=10
     )
     commit = commit_result.stdout.strip().lower()
     if not commit_result.ok or not re.fullmatch(r"[0-9a-f]{40}", commit):
         commit = None
-    dirty_result = run_command(
+    dirty_result = optional_git(
         (
             "git",
             "-C",
@@ -2222,12 +2229,6 @@ def _freeze_v2_data(root: Path, source_dir: str) -> Mapping[str, Any]:
 
     config_path = root / V2_CONFIG_RELATIVE_PATH
     config = load_v2_config(config_path)
-    profile, _ = _load_named_profile(root, config.profile)
-    lock = _load_lock(root, profile)
-    if lock.get("backend") != "local_vllm":
-        raise ValueError("v2-freeze-data 当前只支持项目已验证的 local_vllm 环境")
-    if lock.get("model_revision") != config.model_revision:
-        raise ValueError("环境锁模型 revision 与 v2 配置不一致")
     output_root = root / V2_DATA_RELATIVE_ROOT
     manifest_path = output_root / "dataset-manifest.json"
     if manifest_path.is_file():
@@ -2242,6 +2243,11 @@ def _freeze_v2_data(root: Path, source_dir: str) -> Mapping[str, Any]:
             "heldout_rows": len(heldout),
             "manifest_path": manifest_path.relative_to(root).as_posix(),
         }
+    from autokv.v2_pipeline import _load_v2_lock
+
+    lock = _load_v2_lock(root, config)
+    if lock.get("backend") != "local_vllm":
+        raise ValueError("v2-freeze-data 需要本地模型目录")
     source_root = Path(source_dir)
     if not source_root.is_absolute():
         source_root = root / source_root

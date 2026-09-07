@@ -1,6 +1,6 @@
 # AutoKV-Skip v2.0 阶段 2–4 执行计划
 
-状态：阶段 2–4 代码已实现，待目标服务器冻结数据并执行真实 GPU 实验
+状态：阶段 2–4 代码已实现，45 条正式数据已生成，待继续服务器 GPU 实验
 
 日期：2026-09-02
 
@@ -8,14 +8,15 @@
 
 实现与远程操作入口：[v2.0 阶段 2–4 远程执行手册](RUNBOOK.zh-CN.md)
 
-## 实现状态（2026-09-03）
+## 实现状态（2026-09-08）
 
 - 已实现唯一质量配置、三类确定性合成生成器、固定 revision 的 LongBench-E 导出/抽样和真实 tokenizer/chat template 长度控制；
 - 已实现 Easy 命中、Hard 集合 F1、LongBench QA F1、三层等权聚合和分层配对 bootstrap；
 - 已实现可选的 9 请求 BF16-only pilot、端点缺口规则、8 组/8 单层搜索、P2/P4/P8 早停与 3 个同预算随机对照；
-- 已实现显式 `--no-enable-prefix-caching`、日志正向证明、服务端 prompt token 回验和策略级恢复；
+- 已实现显式 `--no-enable-prefix-caching`、实际 dtype 验证、服务端 prompt token 回验和策略级恢复；
 - 已用纯函数及两条完整编排路径验证 4 启动/90 请求与 25 启动/621 请求边界；
-- 尚未在目标服务器生成正式 45 样本，也尚未产生任何 v2.0 P0 或 P* 结果。文中的实验完成复选框只能由真实服务器产物关闭。
+- 已在目标服务器生成 45 条正式样本，并在 `9ac0341` 发布；目前没有可供分析的正式 GPU 结果。历史任务复选框保留为执行清单，GPU 阶段完成状态仍以实际结果为准。
+- 服务器已安装 Git，但无法访问外网或向 GitHub 推送；Linux 登录设备可以联网，但也无法向 GitHub 推送。结果和日志经 SSH 回传后，由 Linux 登录设备的 GitHub 网页端手动上传并提交；实验不要求两台设备创建或推送 Git 提交。
 
 ## 1. 本计划的范围
 
@@ -32,13 +33,13 @@
 以下事项是阶段 2 的入口条件，不另建一串 gate：
 
 - [x] 已按 [v1.0 对应源码发布要求](../v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 将运行 manifest 的受控源码内容合入 `b2bb775...`，并验证源码树 SHA-256 完全一致；
-- [x] v2.0 阶段 2–4 实现已完成并提交；正式实验前，服务器必须确认当前 `v2.0` 分支已经推送、该提交可公开取得且工作区干净；
+- [x] v2.0 阶段 2–4 实现和 45 条正式数据已准备好；服务器可直接使用源码包；
 - [ ] 实验服务器仍能启动 v1.0 已验证的本地 vLLM runtime；若 runtime 改变，记录新身份，但不把不同 runtime 的结果混表；
-- [ ] vLLM 实际启动日志能够证明 `enable_prefix_caching=False`；
+- [ ] vLLM 启动命令显式关闭 prefix caching；日志若明确报告开启则停止；
 - [ ] KV scale 方案已经选定并写入唯一配置，在看到 `P_0` 质量结果后不得改变；
 - [ ] 模型 revision、tokenizer revision、最大上下文、KV 预算和 generation 参数已经冻结。
 
-若精确运行源码仍未上传，不开始 v2.0 GPU 正式实验。原因不是增加形式化门禁，而是避免再次产生“有结果、无源码”的证据断裂。
+运行前由程序保存实际源码、配置和数据到 `runs/<run-id>/inputs/`。实验结束或失败后，将该副本、结果和日志一起传回 Linux 设备并从 GitHub 网页上传；发布状态不影响实验启动。
 
 ## 3. 总体资源上限
 
@@ -56,9 +57,9 @@
 
 v2.0 只实现以下三层证据，不再复刻 v1.0 的多重状态链：
 
-1. `run-manifest.json`：一次记录 Git commit、源码树 hash、配置 hash、数据 hash、模型/runtime 身份和创建时间；
+1. `run-manifest.json`：记录源码、配置、数据和模型/runtime 身份；Git 信息可空，仅作记录，实际输入另存于同一运行目录的 `inputs/`；
 2. `policy-manifest.json`：每个策略一份，记录精确层集合、有效 server 参数、prefix caching 状态、请求行数、失败数和原始 JSONL hash；
-3. `completed-manifest.json`：最终一次列出上述原始证据及报告，不为派生 CSV/SVG 再做独立 gate。
+3. `completed-manifest.json`：最终列出产物路径和完成状态，不重复计算日志、报告及其他产物的 hash。
 
 恢复规则只有一条：某个策略的 JSONL 可解析、行数正确、失败数为 0，且 hash 与它自己的 policy manifest 一致时才复用；否则只重跑这个策略。不存在独立 `matrix.state.json`、多层 command hash 或“为了检查检查是否成功”的额外状态文件。
 
@@ -143,13 +144,13 @@ data/v2/quality/dataset-manifest.json
 - [ ] Natural 恰好 12 个，两个官方子集各 6 个；
 - [ ] 所有输入适配 32768 上下文且没有策略相关截断；
 - [ ] 数据只产生一个最终身份 hash；
-- [ ] 在产生任何 `P_0` 正式结果前，配置、数据和评分版本已提交并推送。
+- [ ] 在产生任何 `P_0` 正式结果前，配置、数据和评分源码已由程序保存副本；GitHub 上传放在运行后。
 
 ## 6. 阶段 3：端点质量缺口决策
 
 ### 6.1 目标
 
-只运行 `P_32` 与 `P_0` 的 calibration 数据，自动判断是否有必要进入层搜索。首个有效请求同时承担启动 smoke，不另建 smoke 阶段。
+只运行 `P_32` 与 `P_0` 的 calibration 数据，自动判断是否有必要进入层搜索。所有样本使用同一响应解析与评分流程，不增加首条回答的 smoke 判定。
 
 ### 6.2 实现任务
 
@@ -158,13 +159,13 @@ data/v2/quality/dataset-manifest.json
 - [ ] 用一个策略结构表达 `k`、BF16 层集合和其余层的 FP8 dtype。
 - [ ] `P_0` 的 BF16 层集合为空；`P_32` 的 BF16 层集合为全部 32 层。
 - [ ] server 实际生效参数只写入 policy manifest 一次；不再生成多份等价 command/state 证据。
-- [ ] 从启动日志读取并记录有效 KV dtype 和 `enable_prefix_caching=False`。
+- [ ] 从启动日志检查有效 KV dtype，启动命令显式关闭 prefix caching；缺少容量或缓存状态的日志文字不单独阻断质量实验。
 
 #### 任务 3.2：运行 calibration 端点
 
 - [ ] 启动 `P_32`，运行全部 27 个 calibration 样本并停止 server。
 - [ ] 启动 `P_0`，运行同样 27 个 calibration 样本并停止 server。
-- [ ] 每个策略的第一条请求必须响应可解析、无替换字符/循环乱码，且日志证明实际 dtype；失败就停止该策略，不再额外启动两个 smoke 复现同一错误。
+- [ ] 每条响应必须结构可解析，且日志证明实际 dtype；替换字符、重复文本和答错都保存并进入评分，不中断整个策略。
 - [ ] 保存逐样本输出、task score、耗时和错误字段；正式结果要求失败数为 0。
 
 #### 任务 3.3：计算缺口并做唯一决策
@@ -276,7 +277,7 @@ runs/<run-id>/completed-manifest.json
 
 | 情况 | 处理 |
 |---|---|
-| 首个 `P_0` 请求再次乱码 | 保存该策略日志并停止；修复 runtime，不能用更多 smoke 掩盖 |
+| 回答含替换字符或重复片段 | 保存原始输出并正常评分；不增加 smoke，也不因首条答案差而丢弃整个策略 |
 | 单个请求暂时性超时 | 同一策略内最多重试一次；仍失败则该策略不完整 |
 | SSH 中断 | 重新运行当前策略；只有 policy manifest 与 JSONL 完整匹配时才跳过 |
 | 某个策略结果损坏 | 只把该策略标记为 incomplete 并重跑，不递归重验所有已完成策略 |
@@ -288,7 +289,7 @@ runs/<run-id>/completed-manifest.json
 
 完成后必须能够只用以下材料回答面试追问：
 
-1. 一份公开可取得的源码 commit；
+1. 随结果归档公开的实际运行源码副本，Git commit 有则记录；
 2. 一份 45 样本数据 manifest，清楚区分 calibration 与 held-out；
 3. 一份端点 gap 决策；
 4. 若触发搜索，一份固定成本的组/层/预算选择轨迹；

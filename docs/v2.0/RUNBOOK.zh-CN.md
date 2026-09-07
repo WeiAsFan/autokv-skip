@@ -1,226 +1,122 @@
-# AutoKV-Skip v2.0 阶段 2–4 远程执行手册
+# AutoKV-Skip v2.0 离线实验手册
 
-状态：代码已实现，待目标 Linux 服务器生成正式数据并运行 GPU 实验
+适用分支：`v2.0`。本手册覆盖阶段 2–4 的质量实验，阶段 5 性能实验另行安排。
 
-适用分支：`v2.0`
+小型服务器已安装 Git，可用于本地版本管理，但无法访问外网或向 GitHub 仓库推送。用于 SSH 登录的 Linux 设备可以访问外网，但也无法向 GitHub 推送；它负责下载代码、接收服务器回传的运行结果和日志，再通过该设备上的 GitHub 网页端上传并手动提交。实验流程不要求两台设备执行 `git commit` 或 `git push`。
 
-本手册只执行 v2.0 的 Quality v2 数据冻结、端点质量缺口判断、条件式层搜索和 held-out 验证。阶段 5 性能实验不在本手册范围内。
+当前仓库已包含在服务器生成的 45 条正式数据：calibration 27 条、held-out 18 条，难度为 `standard`。这次继续实验直接使用它们，跳过 LongBench 下载、数据生成和 pilot。`9ac0341` 只补交了数据；本次修复还需要更新源码。
 
-## 1. 本次运行会做什么
+## 1. Linux 设备：准备并传入源码
 
-正式命令只有一条：
-
-```bash
-python3 -m autokv v2-run --project-root "$AUTOKV_ROOT" --port 8000 --json
-```
-
-它内部按固定顺序执行：
-
-1. 运行 `P32` 与 `P0` 的 27 条 calibration；
-2. 若 `P0` 满足冻结质量约束，不搜索层，直接运行两个端点的 18 条 held-out；
-3. 若存在质量缺口，依次运行 8 个四层组、前两组中的 8 个单层、`P2 → P4 → P8`；第一个合格预算立即早停；
-4. 中间策略入选时，held-out 只运行 `P32`、`P0`、所选策略和 3 个同预算随机策略；
-5. 输出 `selection.json`、中文质量报告和最终 `completed-manifest.json`。
-
-它不会运行 v1.0 的 doctor/lock/dry-run/双 smoke 链，也不会为了得到中间混合策略而绕过端点判断。
-
-## 2. 登录并更新服务器工作区
-
-从用于 SSH 的 Linux 设备登录小型服务器：
+下面的命令在 **Linux 登录设备的 Bash** 中执行。先设置实际 SSH 地址：
 
 ```bash
-ssh 用户名@服务器地址
+export AUTOKV_SSH='用户名@服务器地址'
+export AUTOKV_TRANSFER="$(mktemp -d "$HOME/autokv-transfer.XXXXXX")"
 ```
 
-进入 v1.0 实际使用过的项目目录：
+如果修复已通过 GitHub 网页上传到 `v2.0`，下载该分支：
 
 ```bash
-cd /mnt_d/huangxiaoyuan/autokv-skip
-export AUTOKV_ROOT="$(pwd -P)"
-printf '项目目录：%s\n' "$AUTOKV_ROOT"
+curl --fail --location \
+  'https://github.com/WeiAsFan/autokv-skip/archive/refs/heads/v2.0.zip' \
+  --output "$AUTOKV_TRANSFER/source.zip"
 ```
 
-确认没有另一个实验进程，再更新 `v2.0`：
+如果修复尚未上传 GitHub，可直接使用本次交付的 `autokv-skip-v2-offline.zip`：
 
 ```bash
-ps -ef | grep -E '[v]llm|[a]utokv'
-git status --short --branch
-git fetch --prune origin
-git switch v2.0
-git pull --ff-only origin v2.0
-git status --short --branch
-git log -1 --oneline --decorate
+cp "$HOME/Downloads/autokv-skip-v2-offline.zip" "$AUTOKV_TRANSFER/source.zip"
 ```
 
-如果 `git status --short` 显示服务器自己的未提交文件，先判断归属并保留，不要使用 `git reset --hard` 或删除整个 `runs/`。
-
-## 3. 验证代码，不启动 GPU
+以上两种来源选一种。解压后只传本次实验需要的源码、文档和正式数据：
 
 ```bash
-python3 --version
-python3 scripts/verify.py
+unzip -q "$AUTOKV_TRANSFER/source.zip" -d "$AUTOKV_TRANSFER/source"
+AUTOKV_SOURCE="$(find "$AUTOKV_TRANSFER/source" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+tar -czf "$AUTOKV_TRANSFER/autokv-v2-source.tar.gz" \
+  -C "$AUTOKV_SOURCE" \
+  autokv scripts configs pyproject.toml README.md docs/v2.0 data/v2/quality
+scp "$AUTOKV_TRANSFER/autokv-v2-source.tar.gz" \
+  "$AUTOKV_SSH:/mnt_d/huangxiaoyuan/autokv-v2-source.tar.gz"
+ssh "$AUTOKV_SSH"
 ```
 
-成功标志为最后一行：
+## 2. 小型服务器：更新项目并复用运行环境
 
-```text
-VERIFICATION_OK tests compileall quick=18 full=34 safety=passed
-```
-
-读取 v1.0 已生成的本地 vLLM 环境锁，并确认关键文件仍存在：
+以下命令在 **小型服务器的 Bash** 中执行。确认本项目当前没有实验正在运行后再更新源码。原来的 `runs/`、环境锁和已冻结数据会保留。
 
 ```bash
-export AUTOKV_VLLM_PYTHON="$(python3 -c 'import json; print(json.load(open("runs/_environment/lock.json", encoding="utf-8"))["python"])')"
-export AUTOKV_VLLM_BIN="$(python3 -c 'import json; print(json.load(open("runs/_environment/lock.json", encoding="utf-8"))["vllm"])')"
-export AUTOKV_MODEL_PATH="$(python3 -c 'import json; print(json.load(open("runs/_environment/lock.json", encoding="utf-8"))["model_path"])')"
-test -x "$AUTOKV_VLLM_PYTHON"
-test -x "$AUTOKV_VLLM_BIN"
-test -d "$AUTOKV_MODEL_PATH"
-"$AUTOKV_VLLM_BIN" serve --help=all | grep -F -- '--no-enable-prefix-caching'
+export AUTOKV_ROOT='/mnt_d/huangxiaoyuan/autokv-skip-v2.0'
+mkdir -p "$AUTOKV_ROOT"
+if [ -f "$AUTOKV_ROOT/data/v2/quality/dataset-manifest.json" ]; then
+  tar -xzf /mnt_d/huangxiaoyuan/autokv-v2-source.tar.gz \
+    -C "$AUTOKV_ROOT" --exclude='data/v2/quality'
+else
+  tar -xzf /mnt_d/huangxiaoyuan/autokv-v2-source.tar.gz -C "$AUTOKV_ROOT"
+fi
+cd "$AUTOKV_ROOT"
+export AUTOKV_VLLM_PYTHON='/mnt_d/huangxiaoyuan/autokv-skip/.venv-vllm-pgcg/bin/python'
+mkdir -p runs/_environment
+if [ ! -f runs/_environment/lock.json ] && \
+   [ -f /mnt_d/huangxiaoyuan/autokv-skip/runs/_environment/lock.json ]; then
+  cp /mnt_d/huangxiaoyuan/autokv-skip/runs/_environment/lock.json runs/_environment/lock.json
+fi
 ```
 
-最后一条必须找到 `--no-enable-prefix-caching`。不要升级驱动、CUDA、torch、vLLM 或 FlashInfer 来“顺便修环境”。
+程序从已有 `runs/_environment/lock.json` 读取 vLLM、模型路径和环境变量，不要求重新生成 doctor 或 lock 记录，也不核对旧驱动版本号。模型直接使用锁中的 `model_path`，无需复制到新项目的 `.cache`。
 
-## 4. 一次性导出固定 revision 的 LongBench-E 源数据
-
-正式 GPU 运行不联网。先在一个可访问 Hugging Face 的环境中导出固定 revision 的 `qasper_e` 与 `hotpotqa_e`。服务器可联网时直接执行：
+如果没有可复用的锁，设置下面两个路径即可。`AUTOKV_MODEL_PATH` 应指向已下载的模型快照目录；本次模型 revision 为 `c170c708c41dac9275d15a8fff4eca08d52bab71`。
 
 ```bash
-python3 -m venv .venv-data
-.venv-data/bin/python -m pip install --upgrade pip
-.venv-data/bin/python -m pip install 'datasets==4.0.0' 'pyarrow==21.0.0'
-.venv-data/bin/python scripts/export_longbench_v2.py \
-  --output-dir data/v2/source/LongBench
-python3 -m json.tool data/v2/source/LongBench/source-manifest.json
+export AUTOKV_VLLM_BIN='/mnt_d/huangxiaoyuan/autokv-skip/.venv-vllm-pgcg/bin/vllm'
+export AUTOKV_MODEL_PATH='/替换为服务器上已有的模型快照目录'
 ```
 
-导出器固定使用：
+已有环境锁时不要执行这段占位路径示例。运行期间保持 vLLM 环境、模型和配置不变；若主动更换环境，使用新项目目录运行，避免复用旧结果。
 
-- 仓库：`THUDM/LongBench`；
-- revision：`92b6c5fbfb0c97b91e92d9ef79802f95ce74b05e`；
-- split：`test`；
-- 子集：`qasper_e`、`hotpotqa_e`。
+## 3. 小型服务器：执行正式实验并保存诊断
 
-`data/v2/source/` 已被 Git 忽略，不要把完整源数据加入本项目仓库。
+选择有资源的 GPU 和空闲端口。之前的记录表明 `8000` 被其他服务占用，下面示例使用 `8010`；若它也被占用，改用其他端口。程序会在启动时检查端口，只管理自己启动的 vLLM 进程。
 
-若小型服务器不能访问 Hugging Face，就在可联网的 Linux 设备上对同一 `v2.0` 提交执行上述导出命令，再传输三个文件：
-
-```bash
-scp data/v2/source/LongBench/source-manifest.json \
-    data/v2/source/LongBench/qasper_e.jsonl \
-    data/v2/source/LongBench/hotpotqa_e.jsonl \
-    用户名@服务器地址:/mnt_d/huangxiaoyuan/autokv-skip/data/v2/source/LongBench/
-```
-
-服务器端再次执行：
-
-```bash
-cd /mnt_d/huangxiaoyuan/autokv-skip
-python3 -m json.tool data/v2/source/LongBench/source-manifest.json
-```
-
-后续冻结命令会自动校验两个 JSONL 的 SHA-256，不接受手工替换文件。
-
-## 5. 可选但建议：运行一次 BF16-only 难度 pilot
-
-v1.0 出现过质量天花板，因此建议在正式数据冻结前执行一次 pilot。它只启动一次 `P32`，使用 3 个任务族 × 3 个长度 × seed 41，共 9 个请求；绝不运行 `P0`。
-
-```bash
-mkdir -p runs
-"$AUTOKV_VLLM_PYTHON" -m autokv v2-pilot \
-  --project-root "$AUTOKV_ROOT" \
-  --port 8000 \
-  --json | tee runs/v2-pilot-cli.json
-python3 -m json.tool runs/v2-pilot-cli.json
-```
-
-程序按预注册规则输出 `recommended_difficulty`：
-
-- 任一 Hard 任务族的 BF16 均值 `< 0.60`：建议 `easy`；
-- 三个任务族的 BF16 均值都 `>= 0.98`：建议 `hard`；
-- 其他情况：保持 `standard`。
-
-若输出 `easy` 或 `hard`，只把 [quality.json](../../configs/v2/quality.json) 中 `data.hard.difficulty` 从 `standard` 改成对应值。不要改 seed、长度、任务参数、阈值或评分器，也不要第二次运行 pilot。若选择跳过 pilot，则保持 `standard`。
-
-一旦 `data/v2/quality/dataset-manifest.json` 存在，`v2-pilot` 会拒绝运行，防止看见正式结果后调数据。
-
-## 6. 冻结 45 条正式 Quality v2 数据
-
-必须使用环境锁中的 vLLM Python，因为它包含与正式模型一致的 `transformers`、tokenizer 和 chat template：
-
-```bash
-"$AUTOKV_VLLM_PYTHON" -m autokv v2-freeze-data \
-  --project-root "$AUTOKV_ROOT" \
-  --source-dir data/v2/source/LongBench \
-  --json | tee runs/v2-freeze-data-cli.json
-python3 -m json.tool runs/v2-freeze-data-cli.json
-```
-
-检查规模与身份：
-
-```bash
-wc -l data/v2/quality/calibration.jsonl data/v2/quality/heldout.jsonl
-python3 -m json.tool data/v2/quality/dataset-manifest.json
-```
-
-预期行数严格为：
-
-```text
-27 data/v2/quality/calibration.jsonl
-18 data/v2/quality/heldout.jsonl
-45 total
-```
-
-生成器已经执行以下检查：
-
-- Easy 为 3 条 calibration + 3 条 held-out；
-- Hard 为 18 + 9，完整覆盖 3 任务 × 3 长度 × 3 seed；
-- Natural 为 6 + 6，两个数据集各 6 条；
-- 合成输入经真实 chat template 后距离 8192/16384/24576 不超过 32 tokens；
-- Natural 经同一 tokenizer 过滤后不超过 24576 tokens；
-- 两个 split 不共享 sample ID、内容、LongBench `_id`、context 或 question。
-
-同一有效 manifest 再次运行 `v2-freeze-data` 只会复用，不会覆盖。正式数据冻结后，不得因为 `P0` 结果不理想而重建。
-
-## 7. 在任何 P0 结果产生前提交冻结数据
-
-```bash
-git status --short
-git add configs/v2/quality.json \
-        data/v2/quality/calibration.jsonl \
-        data/v2/quality/heldout.jsonl \
-        data/v2/quality/dataset-manifest.json
-git commit -m 'data: 冻结 v2.0 质量数据'
-git push origin v2.0
-git status --short
-git ls-files data/v2/quality
-```
-
-`git status --short` 必须为空。这样正式结果中的 Git commit、源码树 hash、配置 hash 和数据 hash 才能形成闭环。
-
-## 8. 在 tmux 中执行正式阶段 3–4
+不需要执行 `scripts/verify.py`、doctor、lock-image、dry-run 或 smoke，也不需要先把冻结数据发布到 GitHub。测试属于开发验证，不是服务器实验的前置步骤。
 
 ```bash
 tmux new -s autokv-v2
-cd /mnt_d/huangxiaoyuan/autokv-skip
-export AUTOKV_ROOT="$(pwd -P)"
-python3 -m autokv v2-run \
-  --project-root "$AUTOKV_ROOT" \
-  --port 8000 \
-  --json | tee runs/v2-run-cli.json
 ```
 
-按 `Ctrl-b`、再按 `d` 脱离 tmux。重新连接 SSH 后查看：
+在新建的 tmux 会话内执行；如果第 2 节采用无环境锁的方式，先在该会话内重新设置 `AUTOKV_VLLM_BIN` 和 `AUTOKV_MODEL_PATH`：
 
 ```bash
-tmux attach -t autokv-v2
+cd /mnt_d/huangxiaoyuan/autokv-skip-v2.0
+export AUTOKV_ROOT="$(pwd -P)"
+export AUTOKV_VLLM_PYTHON='/mnt_d/huangxiaoyuan/autokv-skip/.venv-vllm-pgcg/bin/python'
+export AUTOKV_PORT=8010
+mkdir -p runs
+AUTOKV_ATTEMPT="v2-run-$(date -u +%Y%m%dT%H%M%SZ)"
+set -o pipefail
+"$AUTOKV_VLLM_PYTHON" -u -m autokv v2-run \
+  --project-root "$AUTOKV_ROOT" \
+  --port "$AUTOKV_PORT" \
+  --json \
+  2> >(tee "runs/$AUTOKV_ATTEMPT.log" >&2) \
+  | tee "runs/$AUTOKV_ATTEMPT.json"
+AUTOKV_EXIT=${PIPESTATUS[0]}
+printf '%s\n' "$AUTOKV_EXIT" > "runs/$AUTOKV_ATTEMPT.exitcode"
+printf '运行退出码：%s；诊断日志：runs/%s.log\n' "$AUTOKV_EXIT" "$AUTOKV_ATTEMPT"
 ```
 
-不要同时启动第二个 `v2-run`。若 SSH 或当前命令中断，确认旧 vLLM 进程已经退出后，在同一提交、同一数据、同一端口重新执行完全相同的命令。已经具备有效 policy manifest 的策略会跳过；不完整策略会被移到对应运行目录的 `_incomplete/` 后单独重跑。
+标准输出 JSON、标准错误日志和退出码按尝试分别保存。失败也执行第 5 节导出，不要只记录成功时的 JSON。进度日志会说明正在运行或复用的策略。
 
-## 9. 正确理解运行规模
+按 `Ctrl-b`，再按 `d` 脱离 tmux。重新登录后用 `tmux attach -t autokv-v2` 返回。不要同时启动第二个 `v2-run`。
 
-下列“请求数”指正式样本请求；一次暂时性 HTTP 故障最多允许在同一策略内重试一次。
+### 自动执行顺序
+
+1. `P32`、`P0` 各运行 27 条 calibration。
+2. 若 P0 满足质量约束，直接验证两个端点的 held-out。
+3. 若有质量缺口，运行 8 个四层组、前两组中的 8 个单层，再依次测试 `P2 → P4 → P8`，第一个合格预算立即早停。
+4. 中间策略入选时，held-out 运行两个端点、所选策略和 3 个同预算随机策略。
+5. 输出决策、质量报告和完成清单。
 
 | 分支 | 正式启动数 | 正式样本请求数 |
 |---|---:|---:|
@@ -230,91 +126,103 @@ tmux attach -t autokv-v2
 | 有缺口且 P8 通过 | 27 | 675 |
 | P8 仍失败并回退 P32 | 23 | 603 |
 
-pilot 若执行，另加 1 次启动和 9 个 BF16 请求。程序不会临时加入 P12/P16、更多随机组或更长上下文。
+暂时性 HTTP 故障最多重试一次，不会额外运行 smoke 或增加候选预算。
 
-## 10. 检查最终结果
+### 中断后继续
 
-正式命令成功后：
+确认旧实验进程已经退出，再重复正式命令。源码、配置、数据和运行环境身份相同时，完整策略直接复用；未完成或原始结果损坏的策略移入 `_incomplete/` 后重跑。
 
-```bash
-python3 -m json.tool runs/v2-run-cli.json
-export AUTOKV_RUN_ID="$(python3 -c 'import json; print(json.load(open("runs/v2-run-cli.json", encoding="utf-8"))["run_id"])')"
-test -f "runs/$AUTOKV_RUN_ID/decision.json"
-test -f "runs/$AUTOKV_RUN_ID/selection.json"
-test -f "runs/$AUTOKV_RUN_ID/report/QUALITY-v2.zh-CN.md"
-test -f "runs/$AUTOKV_RUN_ID/completed-manifest.json"
-python3 -m json.tool "runs/$AUTOKV_RUN_ID/decision.json"
-python3 -m json.tool "runs/$AUTOKV_RUN_ID/selection.json"
-sed -n '1,240p' "runs/$AUTOKV_RUN_ID/report/QUALITY-v2.zh-CN.md"
-```
+Git 提交号、工作区是否干净、日志排版和日志 hash 不参与恢复判断。运行前的实际源码、配置、数据和环境路径保存在 `runs/<run-id>/inputs/`，随后与结果一起导出。改变运行代码或输入会生成新运行 ID。
 
-用最终清单校验所有活动产物：
+## 4. 小型服务器：阅读结果
+
+退出码 `0` 且 CLI JSON 的 `complete` 为 `true` 表示本次编排完成。在同一 shell 中查看：
 
 ```bash
-python3 - "$AUTOKV_RUN_ID" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-run_id = sys.argv[1]
-run_root = pathlib.Path("runs") / run_id
-manifest = json.loads((run_root / "completed-manifest.json").read_text(encoding="utf-8"))
-assert manifest["complete"] is True
-assert manifest["run_id"] == run_id
-for record in manifest["artifacts"]:
-    path = (run_root / record["path"]).resolve()
-    path.relative_to(run_root.resolve())
-    observed = hashlib.sha256(path.read_bytes()).hexdigest()
-    assert observed == record["sha256"], (path, observed, record["sha256"])
-print("V2_COMPLETED_MANIFEST_OK", len(manifest["artifacts"]))
-PY
+AUTOKV_RUN_ID="$("$AUTOKV_VLLM_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "runs/$AUTOKV_ATTEMPT.json")"
+cat "runs/$AUTOKV_RUN_ID/decision.json"
+cat "runs/$AUTOKV_RUN_ID/selection.json"
+cat "runs/$AUTOKV_RUN_ID/report/QUALITY-v2.zh-CN.md"
 ```
 
-还应抽查每个 server 日志都证明缓存关闭：
+四种结论都有效：
+
+- `final.k = 0`：全 FP8 满足 calibration 和 held-out 约束。
+- `final.k = 2/4/8` 且 `layer_selection_supported=true`：预算和层排序得到本次证据支持。
+- `final.k = 2/4/8` 且 `layer_selection_supported=false`：支持混合预算，未证明排序优于同预算随机选择。
+- `final.k = 32`：中间预算不合格或未泛化，回退 BF16。
+
+这些结论不代表吞吐、TTFT、TPOT 或 ITL 有提升。日志缺少容量行时，实测容量记录为 `null`，不因此丢弃质量结果。
+
+## 5. 小型服务器：导出结果和日志
+
+实验成功、失败或中断后都可导出。先等本次进程退出，再执行：
 
 ```bash
-grep -R --include='*.server.log' -L 'enable_prefix_caching=False' \
-  "runs/$AUTOKV_RUN_ID/quality" || true
+cd /mnt_d/huangxiaoyuan/autokv-skip-v2.0
+export AUTOKV_ROOT="$(pwd -P)"
+export AUTOKV_VLLM_PYTHON='/mnt_d/huangxiaoyuan/autokv-skip/.venv-vllm-pgcg/bin/python'
+AUTOKV_EXPORT="$("$AUTOKV_VLLM_PYTHON" -m scripts.export_v2_results --project-root "$AUTOKV_ROOT")"
+printf '结果导出目录：%s\n' "$AUTOKV_EXPORT"
+ls -lh "$AUTOKV_EXPORT"
 ```
 
-正常情况下该命令不输出任何 server log 路径。
+默认导出全部 v2 运行；只需某一次时，在命令后加 `--run-id "$AUTOKV_RUN_ID"`。启动阶段失败、还没有 run manifest 时，也能导出 CLI 日志。
 
-## 11. 四种合法结论
+导出目录为 `results/v2-<UTC时间>/`，包含中文说明、已有质量报告和压缩归档。归档包含原始 JSONL、server 日志、未完成策略、每次 CLI 输出和输入副本，不收集模型、`.cache/`、`.git/` 或完整 LongBench 源数据目录。
 
-- `final.k = 0`：P0 在 calibration 与 held-out 都满足质量约束；自动停止是正确结果，不需要制造混合策略。
-- `final.k = 2/4/8` 且 `layer_selection_supported=true`：预算与层排序都得到本次证据支持。
-- `final.k = 2/4/8` 且 `layer_selection_supported=false`：混合预算得到支持，但不能声称层排序优于同预算随机选择。
-- `final.k = 32`：中间预算不合格或 calibration 候选未泛化，系统按设计安全回退 BF16。
+超过 20 MiB 的归档自动分片，每片最多 20 MiB。无需在服务器运行 Git 或逐文件哈希校验。
 
-任何一种都不等于阶段 5 的性能结论。当前报告不能声称吞吐、TTFT、TPOT 或 ITL 更优。
+## 6. Linux 设备：接收文件并从 GitHub 网页上传
 
-## 12. 归档并上传结果
+回到 **Linux 登录设备**，把上一节打印的导出目录最后一段填入 `AUTOKV_EXPORT_NAME`：
 
 ```bash
-mkdir -p "results/v2-$AUTOKV_RUN_ID"
-tar -czf "results/v2-$AUTOKV_RUN_ID/autokv-v2-$AUTOKV_RUN_ID.tar.gz" \
-  "runs/$AUTOKV_RUN_ID" \
-  data/v2/quality \
-  configs/v2/quality.json
-sha256sum "results/v2-$AUTOKV_RUN_ID/autokv-v2-$AUTOKV_RUN_ID.tar.gz" \
-  > "results/v2-$AUTOKV_RUN_ID/autokv-v2-$AUTOKV_RUN_ID.tar.gz.sha256"
-git add "results/v2-$AUTOKV_RUN_ID"
-git commit -m "results: 归档 v2.0 质量运行 $AUTOKV_RUN_ID"
-git push origin v2.0
+export AUTOKV_SSH='用户名@服务器地址'
+export AUTOKV_ROOT='/mnt_d/huangxiaoyuan/autokv-skip-v2.0'
+export AUTOKV_EXPORT_NAME='v2-替换为上一步输出的UTC时间'
+mkdir -p "$HOME/autokv-results"
+scp -r "$AUTOKV_SSH:$AUTOKV_ROOT/results/$AUTOKV_EXPORT_NAME" "$HOME/autokv-results/"
+ls -lh "$HOME/autokv-results/$AUTOKV_EXPORT_NAME"
 ```
 
-归档不得包含模型权重、Hugging Face token、`.cache/`、完整 LongBench 源目录或其他人的服务器文件。
+在 Linux 设备的浏览器操作：
 
-## 13. 常见停止条件
+1. 打开 [v2.0 的 results 目录](https://github.com/WeiAsFan/autokv-skip/tree/v2.0/results)，确认分支为 `v2.0`。
+2. 选择 **Add file → Upload files**，拖入本机 `autokv-results/` 下整个 `v2-<UTC时间>` 文件夹，保留目录层级。
+3. 上传说明、报告、归档或全部分片；提交说明写“归档 v2 质量实验结果与日志”，点击 **Commit changes**。失败诊断可写“归档 v2 实验失败日志”。
+4. 网页刷新后确认文件都在，保存目录链接供后续分析。
 
-| 现象 | 正确处理 |
+GitHub 网页单文件上限为 25 MiB，一次最多上传 100 个文件；20 MiB 分片留有余量。文件较多时分批上传到同一目录。见 [GitHub 官方上传说明](https://docs.github.com/en/repositories/working-with-files/managing-files/adding-a-file-to-a-repository?platform=linux)。
+
+在 Linux 设备解包查看：
+
+```bash
+cd "$HOME/autokv-results/$AUTOKV_EXPORT_NAME"
+# 只有分片归档才执行下面这一行：
+cat autokv-v2.tar.gz.part-* > autokv-v2.tar.gz
+tar -xzf autokv-v2.tar.gz
+```
+
+网页上传归档、分片、说明和报告；解压出的目录用于本地分析。
+
+## 7. 保留的检查与故障处理
+
+| 现象 | 处理 |
 |---|---|
-| `--no-enable-prefix-caching` 不存在 | 停止；当前 runtime 与 v2 设计不兼容，不要静默省略参数 |
-| 日志未出现 `enable_prefix_caching=False` | 当前策略失败；保留日志并排查，不继续累计结果 |
-| 服务端 `prompt_tokens` 与冻结值不同 | tokenizer/chat template 不一致；停止，不能比较策略 |
-| 首条响应含替换字符或循环片段 | 当前策略立即停止；先修 runtime，不增加 smoke 次数 |
-| 单策略 JSONL 或 manifest 损坏 | 重跑同一正式命令；只重跑该策略 |
-| `git status` 不干净 | 在 P0 正式运行前提交预期配置/数据，或保留并处理意外改动 |
-| held-out 失败 | 输出 P32，禁止换样本或根据 held-out 重排层 |
-| 达到对应资源上限 | 停止并报告，不扩大候选预算 |
+| 端口不可用 | 改 `--port`，不停止其他人的服务 |
+| 本地模型目录不存在 | 修正锁中的 `model_path` 或 `AUTOKV_MODEL_PATH` |
+| vLLM 不识别 dtype/skip-layers/prefix-caching 参数 | 查看 server 日志，使用支持项目参数的已有 runtime |
+| 实际 dtype 或混合层日志与策略不符 | 保留日志并修正 runtime；错误精度的结果不能用于比较 |
+| 日志明确显示 prefix caching 开启 | 修正启动行为；缺少该日志文字本身不阻断实验 |
+| 服务端 `prompt_tokens` 与数据值不同 | 修正模型/tokenizer/chat template，保证各策略使用相同输入 |
+| 数据内容或配置与 manifest 不符 | 恢复已冻结配置与数据；CRLF/LF 差异已自动兼容 |
+| 回答含替换字符、重复片段或答错 | 保存输出并正常评分，不用首条回答决定能否运行整个策略 |
+| 单策略结果不完整或被改动 | 重跑正式命令，由程序只重跑受影响策略 |
+| held-out 不合格 | 按规则回退 P32，不换样本、不用 held-out 重排层 |
+
+冻结数据、模型、评分、端点判断、候选预算和 held-out 隔离规则保持原样。哈希只用于识别实际输入与防止复用损坏的原始结果，不要求手工计算，也不检查 GitHub 发布状态。
+
+### 仅在开展新数据实验时
+
+本次已有正式数据，不执行本段。新实验应使用独立项目目录，在可联网的 Linux 设备准备源数据并传入服务器，然后使用服务器已有模型的 tokenizer 执行 `v2-freeze-data`。可选的 BF16-only pilot 最多 9 请求，只能在正式数据生成前运行；数据已存在时禁止事后调整难度。已生成的数据不需要先提交 GitHub 就能开始实验。

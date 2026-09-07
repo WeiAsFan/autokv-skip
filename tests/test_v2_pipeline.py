@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +10,8 @@ from autokv.config import Profile
 from autokv.v2_config import load_v2_config
 from autokv.v2_pipeline import (
     V2RunContext,
+    _load_v2_lock,
+    load_v2_run_context,
     recommend_pilot_difficulty,
     run_v2_pipeline,
 )
@@ -131,7 +135,7 @@ class V2PipelineTests(unittest.TestCase):
         context = self.context(root)
         with (
             patch("autokv.v2_pipeline.load_v2_run_context", return_value=context),
-            patch("autokv.v2_pipeline._assert_linux_a6000"),
+            patch("autokv.v2_pipeline._require_linux"),
             patch("autokv.v2_pipeline.V2PolicyRunner", FakePolicyRunner),
         ):
             return run_v2_pipeline(root, port=8000)
@@ -154,6 +158,67 @@ class V2PipelineTests(unittest.TestCase):
             recommend_pilot_difficulty(dict.fromkeys(names, 0.8), config)[0],
             "standard",
         )
+
+    def test_offline_source_copy_runs_and_resumes_across_git_metadata_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shutil.copytree(ROOT / "configs", root / "configs")
+            shutil.copytree(ROOT / "data/v2/quality", root / "data/v2/quality")
+            shutil.copytree(ROOT / "autokv", root / "autokv", ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copy2(ROOT / "pyproject.toml", root / "pyproject.toml")
+            model = root / "existing-model"
+            model.mkdir()
+            with (
+                patch.dict(os.environ, {"AUTOKV_VLLM_BIN": "/old-project/venv/bin/vllm", "AUTOKV_MODEL_PATH": str(model)}),
+                patch("autokv.cli.run_command", side_effect=FileNotFoundError("git")),
+            ):
+                first = load_v2_run_context(root)
+                self.assertIsNone(first.source["git_commit"])
+                run_root = root / "runs" / first.run_id
+                self.assertTrue((run_root / "inputs/autokv/v2_pipeline.py").is_file())
+                self.assertTrue((run_root / "inputs/data/v2/quality/heldout.jsonl").is_file())
+                with patch("autokv.v2_pipeline._source_identity", return_value={
+                    **first.source, "git_commit": "a" * 40, "git_dirty": True,
+                }):
+                    resumed = load_v2_run_context(root)
+                self.assertEqual(resumed.run_id, first.run_id)
+                provenance = json.loads((run_root / "run-manifest.json").read_text(encoding="utf-8"))
+                self.assertIsNone(provenance["git_commit"])
+                with (root / "autokv/v2_pipeline.py").open("a", encoding="utf-8") as stream:
+                    stream.write("\n# 修改运行代码后必须使用新运行目录\n")
+                changed = load_v2_run_context(root)
+                self.assertNotEqual(changed.run_id, first.run_id)
+
+    def test_legacy_lock_needs_only_paths_and_path_changes_separate_runs(self):
+        config = load_v2_config(ROOT / "configs/v2/quality.json")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            root = Path(directory).resolve()
+            model = root / "model"
+            model.mkdir()
+            path = root / "runs/_environment/lock.json"
+            path.parent.mkdir(parents=True)
+            lock = {
+                "backend": "local_vllm", "model_path": str(model),
+                "vllm": "/old/bin/vllm", "runtime_id": "legacy-id",
+                "host": {"driver": "different-driver"},
+            }
+            path.write_text(json.dumps(lock))
+            first = _load_v2_lock(root, config)
+            lock["vllm"] = "/other/bin/vllm"
+            path.write_text(json.dumps(lock))
+            second = _load_v2_lock(root, config)
+            self.assertNotEqual(first["runtime_id"], second["runtime_id"])
+
+    def test_failed_resume_removes_stale_completed_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            self.run_mode(root, "no_gap")
+            marker = root / "runs/v2-test-run/completed-manifest.json"
+            self.assertTrue(marker.is_file())
+            with patch.object(FakePolicyRunner, "run_policy", side_effect=RuntimeError("failed")):
+                with self.assertRaises(RuntimeError):
+                    self.run_mode(root, "no_gap")
+            self.assertFalse(marker.exists())
 
     def test_no_gap_path_stops_without_layer_search(self):
         with tempfile.TemporaryDirectory() as directory:

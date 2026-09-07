@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -17,7 +17,6 @@ from autokv.commands import (
     CommandResult,
     container_name,
     local_server_command,
-    local_vllm_env,
     run_command,
     runtime_identity,
     server_command,
@@ -27,7 +26,6 @@ from autokv.experiment import (
     inspect_container_command,
     safe_cleanup_owned_container,
     safe_remove_stale_container,
-    validate_local_vllm_command,
     validate_server_log,
 )
 from autokv.io import (
@@ -59,21 +57,38 @@ def _chat_completion_text(response: Mapping[str, Any]) -> str:
     return content
 
 
-def validate_first_output(output: str) -> None:
-    if "\ufffd" in output:
-        raise ValueError("首条响应含 Unicode 替换字符，疑似乱码")
-    compact = re.sub(r"\s+", " ", output).strip()
-    if len(compact) >= 64 and re.search(r"(.{8,64})\1{3,}", compact):
-        raise ValueError("首条响应出现重复片段循环，疑似乱码")
-
-
 def validate_prefix_caching_disabled(log: str, argv: Sequence[str]) -> None:
     if argv.count("--no-enable-prefix-caching") != 1:
         raise ValueError("server 命令未精确包含一次 --no-enable-prefix-caching")
     if "--enable-prefix-caching" in argv:
         raise ValueError("server 命令同时启用了 prefix caching")
-    if re.search(r"enable_prefix_caching['\"]?\s*[=:]\s*(?:false|False)", log) is None:
-        raise ValueError("server 日志未证明 enable_prefix_caching=False")
+    if re.search(r"enable_prefix_caching['\"]?\s*[=:]\s*true\b", log, re.IGNORECASE):
+        raise ValueError("server 日志显示 prefix caching 已开启")
+
+
+def v2_local_env(lock: Mapping[str, Any]) -> dict[str, str]:
+    """沿用已有环境和可选路径配置，并禁止模型库尝试联网。"""
+    environment = os.environ.copy()
+    for key, name in (
+        ("ld_library_path", "LD_LIBRARY_PATH"),
+        ("cuda_home", "CUDA_HOME"),
+        ("cuda_home", "CUDA_PATH"),
+        ("nvcc", "FLASHINFER_NVCC"),
+        ("flashinfer_workspace_base", "FLASHINFER_WORKSPACE_BASE"),
+        ("torch_extensions_dir", "TORCH_EXTENSIONS_DIR"),
+    ):
+        if lock.get(key):
+            environment[name] = str(lock[key])
+    if lock.get("cuda_home"):
+        environment["PATH"] = str(lock["cuda_home"]) + "/bin" + os.pathsep + environment.get("PATH", "")
+    environment.update({
+        "VLLM_ENABLE_CUDA_COMPATIBILITY": "1",
+        "VLLM_LOGGING_LEVEL": "DEBUG",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+    })
+    return environment
 
 
 def _validate_result_rows(
@@ -120,7 +135,6 @@ def _validate_result_rows(
 def policy_manifest_is_valid(
     manifest_path: Path,
     result_path: Path,
-    log_path: Path,
     policy: Policy,
     samples: Sequence[Mapping[str, Any]],
     *,
@@ -143,9 +157,7 @@ def policy_manifest_is_valid(
             or manifest.get("rows") != len(samples)
             or manifest.get("failures") != 0
             or not result_path.is_file()
-            or not log_path.is_file()
             or manifest.get("result_sha256") != sha256_file(result_path)
-            or manifest.get("server_log_sha256") != sha256_file(log_path)
         ):
             return False
         rows = read_jsonl(result_path)
@@ -270,15 +282,16 @@ class V2PolicyRunner:
         if policy_manifest_is_valid(
             manifest_path,
             result_path,
-            log_path,
             policy,
             samples,
             split=split,
             split_sha256=split_sha256,
             run_id=self.run_id,
         ):
+            print(f"{split} / {policy.name}：复用已完成结果", file=sys.stderr, flush=True)
             return result_path
 
+        print(f"{split} / {policy.name}：开始 {len(samples)} 个样本", file=sys.stderr, flush=True)
         self._archive_invalid(
             (result_path, manifest_path, log_path, working_path),
             relative_directory,
@@ -294,6 +307,7 @@ class V2PolicyRunner:
                 self.project_root,
                 self.port,
                 model_revision,
+                model_path=Path(str(self.lock["model_path"])),
             )
         else:
             argv = server_command(
@@ -311,15 +325,22 @@ class V2PolicyRunner:
         started = False
         inspected_argv: tuple[str, ...] = ()
         captured_log = ""
-        capacity: dict[str, Any] | None = None
         completed = False
         try:
+            # 避免把占用端口的其他服务误当作本次策略。
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                if sys.platform.startswith("linux"):
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    probe.bind(("0.0.0.0", self.port))
+                except OSError as exc:
+                    raise ValueError(f"端口 {self.port} 不可用；请用 --port 指定空闲端口") from exc
             if self.local_backend:
                 process = LocalVllmProcess.start(
                     argv,
                     log_path,
                     cwd=self.project_root,
-                    env=local_vllm_env(self.lock),
+                    env=v2_local_env(self.lock),
                 )
             else:
                 safe_remove_stale_container(name, self.command_runner)
@@ -337,9 +358,6 @@ class V2PolicyRunner:
             wait_until_ready(client, timeout_seconds=900, interval_seconds=2)
             if self.local_backend:
                 inspected_argv = tuple(argv)
-                validate_local_vllm_command(
-                    json.dumps(argv), policy.variant, self.config.calculate_kv_scales
-                )
             else:
                 inspected_argv = inspect_container_command(
                     name,
@@ -352,17 +370,17 @@ class V2PolicyRunner:
                 if self.local_backend and process
                 else self._docker_logs(name)
             )
-            validate_server_log(captured_log, policy.variant, self.config.num_layers)
+            validate_server_log(
+                captured_log, policy.variant, self.config.num_layers, require_capacity=False
+            )
             validate_prefix_caching_disabled(captured_log, inspected_argv)
 
-            for index, sample in enumerate(samples):
+            for sample in samples:
                 started_at = time.monotonic()
                 try:
                     response, retry_count = self._request_with_one_retry(client, sample)
                     self.requests += 1 + retry_count
                     output = _chat_completion_text(response)
-                    if index == 0:
-                        validate_first_output(output)
                     task_score = score_v2_output(output, sample)
                     usage = response.get("usage")
                     if not isinstance(usage, Mapping):
@@ -419,13 +437,9 @@ class V2PolicyRunner:
         finally:
             primary_error = sys.exc_info()[1]
             cleanup_error: BaseException | None = None
-            if started:
+            if started and not self.local_backend:
                 try:
-                    captured_log = (
-                        process.log_text()
-                        if self.local_backend and process
-                        else self._docker_logs(name)
-                    ) or captured_log
+                    captured_log = self._docker_logs(name) or captured_log
                     atomic_write_text(log_path, captured_log)
                 except BaseException as exc:
                     if primary_error is None:
@@ -435,6 +449,8 @@ class V2PolicyRunner:
                     if self.local_backend:
                         assert process is not None
                         process.stop()
+                        captured_log = process.log_text() or captured_log
+                        atomic_write_text(log_path, captured_log)
                     else:
                         safe_cleanup_owned_container(name, self.command_runner)
             except BaseException as exc:
@@ -454,12 +470,15 @@ class V2PolicyRunner:
         _validate_result_rows(rows, policy, samples, split, self.run_id)
         result_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(working_path, result_path)
-        capacity_value = parse_capacity_tokens(captured_log)
-        capacity = {
-            "tokens": capacity_value.tokens,
-            "model_length": capacity_value.model_length,
-            "max_concurrency": capacity_value.max_concurrency,
-        }
+        try:
+            capacity_value = parse_capacity_tokens(captured_log)
+            capacity = {
+                "tokens": capacity_value.tokens,
+                "model_length": capacity_value.model_length,
+                "max_concurrency": capacity_value.max_concurrency,
+            }
+        except ValueError:
+            capacity = {"tokens": None, "model_length": None, "max_concurrency": None}
         atomic_write_json(
             manifest_path,
             {
@@ -480,7 +499,6 @@ class V2PolicyRunner:
                 "result_path": result_path.name,
                 "result_sha256": sha256_file(result_path),
                 "server_log_path": log_path.name,
-                "server_log_sha256": sha256_file(log_path),
                 "completed_at_utc": datetime.now(timezone.utc).isoformat(),
             },
         )

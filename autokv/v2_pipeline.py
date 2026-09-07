@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import statistics
 import sys
 from dataclasses import dataclass
@@ -11,15 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from autokv.commands import run_command, runtime_identity
+from autokv.commands import runtime_identity
 from autokv.config import Profile, load_profile
-from autokv.doctor import DoctorError, parse_gpu_csv, validate_host
 from autokv.io import (
     atomic_write_json,
     atomic_write_text,
     read_json,
     read_jsonl,
-    sha256_file,
+    sha256_text_file,
 )
 from autokv.v2_config import (
     V2_CONFIG_RELATIVE_PATH,
@@ -83,13 +84,11 @@ def run_v2_pilot(root: Path, *, port: int = 8000) -> Mapping[str, Any]:
     if (root / V2_DATA_RELATIVE_ROOT / "dataset-manifest.json").exists():
         raise ValueError("正式 v2 数据已经冻结，禁止事后运行 pilot")
     profile = load_profile(root / "configs" / f"{config.profile}.json")
-    lock = _load_v2_lock(root, profile, config)
+    lock = _load_v2_lock(root, config)
     if lock.get("backend") != "local_vllm":
         raise ValueError("v2 pilot 当前只支持项目已验证的 local_vllm 环境")
     source = _source_identity(root)
-    if source.get("git_commit") is None or source.get("git_dirty") is not False:
-        raise ValueError("pilot 要求 autokv/scripts/configs/pyproject 已提交且干净")
-    _assert_linux_a6000(profile)
+    _require_linux()
     codec = TransformersPromptCodec(Path(str(lock["model_path"])))
     pilot_samples = tuple(
         make_hard_rows(
@@ -114,7 +113,7 @@ def run_v2_pilot(root: Path, *, port: int = 8000) -> Mapping[str, Any]:
         + hashlib.sha256(
             "\n".join(
                 (
-                    sha256_file(config_path),
+                    sha256_text_file(config_path),
                     pilot_sha256,
                     runtime_identity(lock),
                     str(source["tree_sha256"]),
@@ -191,19 +190,51 @@ def run_v2_pilot(root: Path, *, port: int = 8000) -> Mapping[str, Any]:
     }
 
 
-def _load_v2_lock(
-    root: Path, profile: Profile, config: V2QualityConfig
-) -> Mapping[str, Any]:
+def _load_v2_lock(root: Path, config: V2QualityConfig) -> Mapping[str, Any]:
+    """读取已有运行路径；也可直接指定本地 vLLM 与模型，无需重新生成环境锁。"""
     path = root / "runs" / "_environment" / "lock.json"
-    if not path.is_file():
-        raise ValueError("缺少已有本地 vLLM 环境锁：runs/_environment/lock.json")
-    value = read_json(path)
-    # 复用 v1 已验证的锁结构，不创建 v2 doctor/lock 链。
-    from autokv.cli import _validate_lock
-
-    lock = _validate_lock(value, profile)
-    if lock.get("model_revision") != config.model_revision:
+    value = read_json(path) if path.is_file() else {}
+    if not isinstance(value, Mapping):
+        raise ValueError("运行环境配置必须是 JSON 对象")
+    lock = dict(value)
+    overrides = {
+        key: os.environ[name]
+        for key, name in (
+            ("vllm", "AUTOKV_VLLM_BIN"),
+            ("model_path", "AUTOKV_MODEL_PATH"),
+        )
+        if os.environ.get(name)
+    }
+    lock.update(overrides)
+    lock.setdefault("backend", "local_vllm")
+    lock.setdefault("model_revision", config.model_revision)
+    if lock["model_revision"] != config.model_revision:
         raise ValueError("环境锁的模型 revision 与 v2 冻结配置不一致")
+    if lock.get("model_id", config.model_id) != config.model_id:
+        raise ValueError("运行环境的模型与 v2 配置不一致")
+    if lock["backend"] == "local_vllm":
+        for key, variable in (("vllm", "AUTOKV_VLLM_BIN"), ("model_path", "AUTOKV_MODEL_PATH")):
+            if not isinstance(lock.get(key), str) or not lock[key]:
+                raise ValueError(f"缺少 {key}；设置 {variable} 或复用 runs/_environment/lock.json")
+        if not Path(lock["model_path"]).is_dir():
+            raise ValueError(f"本地模型目录不存在：{lock['model_path']}")
+        lock.setdefault("python", sys.executable)
+        identity = {
+            key: lock.get(key)
+            for key in (
+                "runtime_id", "vllm", "model_path", "versions",
+                "ld_library_path", "cuda_home", "nvcc",
+            )
+        }
+        lock["runtime_id"] = "local-vllm-" + hashlib.sha256(
+            json.dumps(identity, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+    elif lock["backend"] == "docker":
+        for key in ("image_ref", "image_digest"):
+            if not isinstance(lock.get(key), str) or not lock[key]:
+                raise ValueError(f"容器运行环境缺少 {key}")
+    else:
+        raise ValueError(f"不支持的运行方式：{lock['backend']}")
     return lock
 
 
@@ -233,34 +264,12 @@ def _v2_run_id(
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
-def _assert_linux_a6000(profile: Profile) -> None:
+def _require_linux() -> None:
     if not sys.platform.startswith("linux"):
-        raise ValueError("v2 GPU 运行只能在目标 Linux A6000 服务器执行")
-    result = run_command(
-        (
-            "nvidia-smi",
-            "--query-gpu=name,driver_version,memory.total,compute_cap",
-            "--format=csv,noheader,nounits",
-        ),
-        timeout=30,
-    )
-    if not result.ok:
-        raise DoctorError("nvidia-smi 只读查询失败")
-    facts = parse_gpu_csv(result.stdout)
-    failures = [
-        gate for gate in validate_host(facts, profile.hardware.driver) if not gate.ok
-    ]
-    if failures:
-        details = "; ".join(
-            f"{gate.name}={gate.observed}, expected={gate.expected}"
-            for gate in failures
-        )
-        raise DoctorError(f"目标服务器身份不匹配：{details}")
+        raise ValueError("v2 GPU 运行需要 Linux；请在实验服务器执行")
 
 
-def load_v2_run_context(
-    root: Path, *, require_clean_source: bool = True
-) -> V2RunContext:
+def load_v2_run_context(root: Path) -> V2RunContext:
     root = root.resolve()
     config_path = root / V2_CONFIG_RELATIVE_PATH
     config = load_v2_config(config_path)
@@ -273,21 +282,15 @@ def load_v2_run_context(
         or profile.kv_cache_memory != "16G"
     ):
         raise ValueError("v1 full profile 与 v2 冻结运行设置不一致")
-    lock = _load_v2_lock(root, profile, config)
+    lock = _load_v2_lock(root, config)
     dataset_manifest, calibration, heldout = load_frozen_v2_dataset(
         config,
         root / V2_DATA_RELATIVE_ROOT,
         config_path=config_path,
     )
     source = _source_identity(root)
-    if require_clean_source and (
-        source.get("git_commit") is None or source.get("git_dirty") is not False
-    ):
-        raise ValueError(
-            "正式 v2 运行要求 autokv/scripts/configs/pyproject 已提交且干净"
-        )
     run_id = _v2_run_id(
-        sha256_file(config_path),
+        sha256_text_file(config_path),
         str(dataset_manifest["dataset_sha256"]),
         runtime_identity(lock),
         config.model_revision,
@@ -315,10 +318,11 @@ def _ensure_run_manifest(context: V2RunContext) -> Path:
         "schema_version": 2,
         "run_id": context.run_id,
         "git_commit": context.source.get("git_commit"),
+        "git_dirty": context.source.get("git_dirty"),
         "source_tree_sha256": context.source["tree_sha256"],
         "source_files": context.source["files"],
         "config_path": V2_CONFIG_RELATIVE_PATH.as_posix(),
-        "config_sha256": sha256_file(context.config_path),
+        "config_sha256": sha256_text_file(context.config_path),
         "dataset_manifest_path": (
             V2_DATA_RELATIVE_ROOT / "dataset-manifest.json"
         ).as_posix(),
@@ -334,10 +338,32 @@ def _ensure_run_manifest(context: V2RunContext) -> Path:
     if path.is_file():
         observed = read_json(path)
         if not isinstance(observed, Mapping) or any(
-            observed.get(key) != value for key, value in expected.items()
+            observed.get(key) != value
+            for key, value in expected.items()
+            if key not in {"git_commit", "git_dirty"}
         ):
             raise ValueError("已有 v2 run manifest 与当前冻结输入不一致")
         return path
+    # 运行前保存实际输入，发布时无需从 Git 找回服务器上的未提交源码。
+    inputs = path.parent / "inputs"
+    relative_files = [Path(record["path"]) for record in context.source["files"]]
+    relative_files.extend(
+        V2_DATA_RELATIVE_ROOT / name
+        for name in ("calibration.jsonl", "heldout.jsonl", "dataset-manifest.json")
+    )
+    for relative in relative_files:
+        destination = inputs / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(context.root / relative, destination)
+    atomic_write_json(inputs / "runtime.json", {
+        key: context.lock[key]
+        for key in (
+            "backend", "runtime_id", "python", "vllm", "model_path", "model_revision",
+            "versions", "host", "ld_library_path", "cuda_home", "nvcc",
+            "flashinfer_workspace_base", "torch_extensions_dir", "image_ref", "image_digest",
+        )
+        if key in context.lock
+    })
     atomic_write_json(
         path,
         {**expected, "created_at_utc": datetime.now(timezone.utc).isoformat()},
@@ -389,9 +415,10 @@ def _render_quality_report(
         "# AutoKV-Skip v2.0 质量选择报告",
         "",
         f"- 运行 ID：`{context.run_id}`",
-        f"- 源码提交：`{context.source.get('git_commit')}`",
+        f"- 源码提交（可空，仅作记录）：`{context.source.get('git_commit')}`",
+        "- 实际运行源码、配置与数据：同一运行目录的 `inputs/`",
         f"- 数据身份：`{context.dataset_manifest['dataset_sha256']}`",
-        "- Prefix caching：关闭（每个策略的实际参数与日志均已验证）",
+        "- Prefix caching：启动命令显式关闭；日志若报告开启则停止",
         f"- Calibration 决策：`{selection['calibration_decision']}`",
         f"- Calibration 候选：`{selection['candidate']['name']}`",
         f"- 最终策略 P*：`{selection['final']['name']}`",
@@ -479,7 +506,8 @@ def _render_quality_report(
     for row in capacity_rows:
         lines.append(
             f"| {row['name']} | {row['k']} | {row['bytes_per_token']} | "
-            f"{row['capacity_ratio_vs_p32']:.4f}× | {row['measured_tokens']} |"
+            f"{row['capacity_ratio_vs_p32']:.4f}× | "
+            f"{row['measured_tokens'] if row['measured_tokens'] is not None else '未记录'} |"
         )
     lines.extend(
         [
@@ -513,7 +541,6 @@ def _write_completed_manifest(context: V2RunContext, final: Policy) -> Path:
         artifacts.append(
             {
                 "path": artifact.relative_to(run_root).as_posix(),
-                "sha256": sha256_file(artifact),
             }
         )
     atomic_write_json(
@@ -536,7 +563,9 @@ def run_v2_pipeline(root: Path, *, port: int = 8000) -> Mapping[str, Any]:
     """严格执行端点判断；只有有缺口时才做 coarse-to-fine 搜索。"""
 
     context = load_v2_run_context(root)
-    _assert_linux_a6000(context.profile)
+    _require_linux()
+    # 恢复中再次失败时，不能让旧完成标记把本次失败标成成功。
+    (context.root / "runs" / context.run_id / "completed-manifest.json").unlink(missing_ok=True)
     runner = V2PolicyRunner(
         context.config,
         context.profile,

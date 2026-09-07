@@ -91,6 +91,11 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def sha256_text_file(path: Path) -> str:
+    """文本身份忽略传输或 Git 检出造成的 CRLF/LF 差异。"""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def redact(value: str, secrets: Iterable[str]) -> str:
     result = value
     for secret in secrets:

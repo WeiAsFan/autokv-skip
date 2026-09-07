@@ -44,9 +44,11 @@ BF16 与全 FP8 的平均 Q 差只有 `3.8758e-5`，配对 95% CI 为 `[-8.175e-
 
 ## v2.0 实现状态
 
-`v2.0` 已实现“质量缺口驱动的混合精度自动选择”：45 样本三层 Quality v2、可选 BF16-only pilot、P32/P0 端点判断、条件式 8 组/8 单层搜索、P2/P4/P8 早停、held-out 和 3 个同预算随机对照。所有 v2 server 显式关闭 prefix caching，并用实际日志和服务端 prompt token 回验。
+`v2.0` 已实现“质量缺口驱动的混合精度自动选择”：45 样本三层 Quality v2、可选 BF16-only pilot、P32/P0 端点判断、条件式 8 组/8 单层搜索、P2/P4/P8 早停、held-out 和 3 个同预算随机对照。所有 v2 server 显式关闭 prefix caching，保留实际 dtype 与服务端 prompt token 检查。
 
-当前仅完成代码与本地纯函数/编排验证，尚未在目标 A6000 服务器生成正式数据或产生 v2 GPU 结果。远程执行见 [v2.0 阶段 2–4 远程执行手册](docs/v2.0/RUNBOOK.zh-CN.md)。
+45 条正式数据已在服务器生成，并随 `9ac0341` 纳入仓库；目前没有可供分析的 v2 正式 GPU 结果。继续实验直接复用这些数据，无需重做下载、pilot 或冻结。
+
+小型服务器已安装 Git，但无法访问外网或向 GitHub 推送；Linux 登录设备可以联网，但也无法向 GitHub 推送。v2 离线运行时复用已有 vLLM 和模型路径，自动保存实际输入，不要求源码已提交、工作区干净或先推送 GitHub。运行后使用 `python -m scripts.export_v2_results` 导出结果及失败日志，通过 `scp` 传回 Linux 登录设备，再由该设备的 GitHub 网页端手动上传并提交。完整命令见 [v2.0 离线实验手册](docs/v2.0/RUNBOOK.zh-CN.md)。
 
 ## 项目边界
 
@@ -61,7 +63,7 @@ BF16 与全 FP8 的平均 Q 差只有 `3.8758e-5`，配对 95% CI 为 `[-8.175e-
 - [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md)：把结果与精确源码提交闭环的必做事项。
 - [v2.0 设计文档](docs/v2.0/DESIGN.zh-CN.md)：质量缺口驱动的 `P_k` 自动选择、三层数据与验证规则。
 - [v2.0 阶段 2–4 执行计划](docs/v2.0/EXECUTION-PLAN.zh-CN.md)：规模受控的实现、GPU 运行和精简证据计划。
-- [v2.0 阶段 2–4 远程执行手册](docs/v2.0/RUNBOOK.zh-CN.md)：LongBench 固化、可选 pilot、正式运行、恢复与归档命令。
+- [v2.0 离线实验手册](docs/v2.0/RUNBOOK.zh-CN.md)：传入源码、正式运行、保存失败日志、传回结果与网页上传。
 - [v1.0 运行前服务器手册](RUNBOOK.zh-CN.md)：历史操作方案，不是本次运行的精确复现指南。
 - [v1.0 运行前技术规格](docs/superpowers/specs/2026-08-24-autokv-skip-design.md)：历史设计意图。
 - [v1.0 运行前实现计划](docs/superpowers/plans/2026-08-24-autokv-skip-implementation.md)：历史实现计划。

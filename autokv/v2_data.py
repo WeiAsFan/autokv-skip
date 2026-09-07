@@ -16,6 +16,7 @@ from autokv.io import (
     read_json,
     read_jsonl,
     sha256_file,
+    sha256_text_file,
 )
 from autokv.v2_config import V2QualityConfig
 
@@ -779,7 +780,7 @@ def freeze_v2_dataset(
         for key in ("repository", "revision", "split", "datasets", "rows", "files")
     }
     identity = {
-        "config_sha256": sha256_file(config_path),
+        "config_sha256": sha256_text_file(config_path),
         "source_identity_sha256": _sha256_json(source_identity),
         "chat_template_sha256": codec.template_sha256,
         "model_revision": config.model_revision,
@@ -810,7 +811,7 @@ def load_frozen_v2_dataset(
     manifest = read_json(output_root / "dataset-manifest.json")
     if not isinstance(manifest, Mapping) or manifest.get("schema_version") != 2:
         raise ValueError("v2 dataset manifest 无效")
-    if manifest.get("config_sha256") != sha256_file(config_path):
+    if manifest.get("config_sha256") != sha256_text_file(config_path):
         raise ValueError("v2 dataset 使用了不同的质量配置")
     if manifest.get("model_revision") != config.model_revision:
         raise ValueError("v2 dataset 的模型 revision 不一致")
@@ -826,7 +827,7 @@ def load_frozen_v2_dataset(
         if (
             path.parent.resolve() != output_root.resolve()
             or not path.is_file()
-            or sha256_file(path) != record.get("sha256")
+            or sha256_text_file(path) != record.get("sha256")
         ):
             raise ValueError(f"v2 dataset 的 {split} hash 不匹配")
         rows = tuple(read_jsonl(path))

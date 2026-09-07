@@ -1,5 +1,7 @@
 # AutoKV-Skip FP8 乱码修复与复验运行手册
 
+当前实验请使用 [v2.0 离线实验手册](docs/v2.0/RUNBOOK.zh-CN.md)，其中已包含服务器离线运行、失败日志导出和 GitHub 网页上传流程。
+
 > **文档状态：v1.0 bug 修复前历史手册。** 本文记录针对 2026-08-28 乱码结果的修复与复验流程，不是修复后运行 `8181c9a332ef6e9c` 的事实报告。修复后事实见 [v1.0 统一项目事实](docs/v1.0/FACTS.zh-CN.md)，运行对应源码的发布要求见 [v1.0 对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md)。
 
 本文用于从一台 Linux 客户端通过 SSH 登录目标 A6000 服务器，保全真实运行源码，隔离 FP8 KV Cache 乱码根因，应用最小修复，并在严格正确性门禁通过后恢复 AutoKV-Skip quick 实验。

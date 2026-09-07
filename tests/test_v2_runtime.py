@@ -1,7 +1,9 @@
 import json
+import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from autokv.commands import CommandResult, local_server_command
 from autokv.config import Profile
@@ -10,7 +12,6 @@ from autokv.v2_policy import endpoint_policies
 from autokv.v2_runtime import (
     V2PolicyRunner,
     policy_manifest_is_valid,
-    validate_first_output,
     validate_prefix_caching_disabled,
 )
 
@@ -36,11 +37,64 @@ class V2RuntimeTests(unittest.TestCase):
         )
         self.assertEqual(argv.count("--no-enable-prefix-caching"), 1)
 
-    def test_first_output_rejects_replacement_and_repetition(self):
+    def test_prefix_log_absence_does_not_block_but_enabled_cache_does(self):
+        validate_prefix_caching_disabled("", ["--no-enable-prefix-caching"])
         with self.assertRaises(ValueError):
-            validate_first_output("bad \ufffd output")
-        with self.assertRaises(ValueError):
-            validate_first_output("abcdefgh" * 8)
+            validate_prefix_caching_disabled("enable_prefix_caching=True", ["--no-enable-prefix-caching"])
+
+    def test_local_runtime_uses_existing_model_and_scores_bad_output(self):
+        config = load_v2_config(ROOT / "configs/v2/quality.json")
+        profile = Profile.from_dict(Profile.default_dict("full"))
+        _, policy = endpoint_policies()
+        sample = {
+            "sample_id": "easy-1", "split": "calibration", "tier": "easy", "task": "niah",
+            "prompt": "Return CODE-1.", "prompt_tokens": 7, "max_tokens": 8,
+            "expected_answers": ["CODE-1"], "answer_mode": "contains",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            model = root / "old-project/model"
+            model.mkdir(parents=True)
+            lock = {
+                "backend": "local_vllm", "model_revision": config.model_revision,
+                "vllm": "/old-project/venv/bin/vllm", "model_path": str(model), "runtime_id": "local-test",
+            }
+            process = Mock()
+            process.log_text.return_value = (
+                "Using AttentionBackendEnum.FLASHINFER backend.\n"
+                "Using fp8_e4m3 data type to store kv cache.\n"
+            )
+            client = Mock()
+            client.health.return_value = True
+            client.chat_complete.return_value = {
+                "choices": [{"message": {"content": "\ufffd" + "abcdefgh" * 8}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 8},
+            }
+            with socket.socket() as port_probe:
+                port_probe.bind(("127.0.0.1", 0))
+                port = port_probe.getsockname()[1]
+            runner = V2PolicyRunner(config, profile, root, lock, "local-run", port=port,
+                                    client_factory=lambda *_: client)
+            arguments = dict(split="calibration", split_sha256="a" * 64,
+                             relative_directory=Path("quality/calibration/endpoints"))
+            with patch("autokv.v2_runtime.LocalVllmProcess.start", return_value=process) as start:
+                path = runner.run_policy(policy, [sample], **arguments)
+                argv = start.call_args.args[0]
+                self.assertEqual(argv[argv.index("--model") + 1], str(model))
+                self.assertEqual(start.call_args.kwargs["env"]["HF_HUB_OFFLINE"], "1")
+                row = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(row["task_score"], 0.0)
+                manifest = json.loads(path.with_suffix(".policy-manifest.json").read_text(encoding="utf-8"))
+                self.assertIsNone(manifest["capacity"]["tokens"])
+                path.with_suffix(".server.log").write_text("日志重新排版", encoding="utf-8")
+                runner.run_policy(policy, [sample], **arguments)
+                self.assertEqual(start.call_count, 1)
+                row["task_score"] = 1.0
+                path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                runner.run_policy(policy, [sample], **arguments)
+                self.assertEqual(start.call_count, 2)
+                self.assertTrue(list((root / "runs/local-run/_incomplete").rglob("p0.jsonl")))
+            self.assertEqual(process.stop.call_count, 2)
 
     def test_one_policy_writes_minimal_manifest_and_resumes_without_restart(self):
         config = load_v2_config(ROOT / "configs/v2/quality.json")
@@ -141,13 +195,11 @@ class V2RuntimeTests(unittest.TestCase):
                 relative_directory=Path("quality/calibration/endpoints"),
             )
             manifest = path.with_name(path.stem + ".policy-manifest.json")
-            log = path.with_name(path.stem + ".server.log")
 
             self.assertTrue(
                 policy_manifest_is_valid(
                     manifest,
                     path,
-                    log,
                     policy,
                     (sample,),
                     split="calibration",
