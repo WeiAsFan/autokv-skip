@@ -1,6 +1,6 @@
 # AutoKV-Skip A6000 独立运行手册
 
-当前 `v2.0` 实验请使用 [v2.0 离线实验手册](docs/v2.0/RUNBOOK.zh-CN.md)。本历史手册中的联网、Git 提交和前置检查流程不适用于 v2。
+当前 `v2.1` 实验请使用 [v2.1 离线实验手册](docs/v2.1/RUNBOOK.zh-CN.md)。本历史手册中的联网、Git 提交和前置检查流程不适用于 v2。
 
 > **文档状态：v1.0 运行前历史手册。** 文中的 R535、Docker、镜像版本、动态 scale、门禁数量和命令属于运行前方案，不是 `8181c9a332ef6e9c` 的实际环境或精确复现步骤。实际运行事实见 [v1.0 统一项目事实](docs/v1.0/FACTS.zh-CN.md)；在满足 [对应源码发布要求](docs/v1.0/SOURCE-PUBLICATION-REQUIREMENT.zh-CN.md) 前，不得据本文声称该运行已可复现。
 

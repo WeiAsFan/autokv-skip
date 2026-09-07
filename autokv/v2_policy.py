@@ -110,7 +110,7 @@ def nested_budget_policy(
 def random_control_policies(
     selected: Policy, seeds: Sequence[int]
 ) -> tuple[Policy, ...]:
-    if selected.k not in {2, 4, 8}:
+    if selected.k not in {1, 2, 4, 8}:
         raise ValueError("只有中间策略需要随机同预算对照")
     layer_sets = random_controls(
         selected.num_layers,

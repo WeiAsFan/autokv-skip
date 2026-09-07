@@ -1,4 +1,4 @@
-"""AutoKV-Skip v2.0 唯一质量配置及其严格校验。"""
+"""AutoKV-Skip v2.1 当前质量配置与 v2.0 历史数据配置。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-V2_CONFIG_RELATIVE_PATH = Path("configs/v2/quality.json")
-V2_DATA_RELATIVE_ROOT = Path("data/v2/quality")
+V2_CONFIG_RELATIVE_PATH = Path("configs/v2.1/quality.json")
+V2_DATA_RELATIVE_ROOT = Path("data/v2.1/quality")
 V2_TIERS = ("easy", "hard", "natural")
 V2_HARD_FAMILIES = (
     "multi_key_value",
@@ -83,8 +83,9 @@ class V2QualityConfig:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "V2QualityConfig":
         root = _mapping(value, "配置")
-        if root.get("schema_version") != 2 or root.get("name") != "quality-v2":
-            raise ValueError("v2 配置必须为 schema_version=2、name=quality-v2")
+        if root.get("schema_version") != 2 or root.get("name") not in {"quality-v2", "quality-v2.1"}:
+            raise ValueError("不支持的 v2 质量配置版本")
+        is_v21 = root["name"] == "quality-v2.1"
 
         model = _mapping(root.get("model"), "model")
         runtime = _mapping(root.get("runtime"), "runtime")
@@ -216,8 +217,9 @@ class V2QualityConfig:
         random_seeds = _integer_tuple(
             selection.get("random_seeds"), "selection.random_seeds"
         )
-        if budgets != (0, 2, 4, 8, 32):
-            raise ValueError("候选预算必须严格为 0、2、4、8、32")
+        expected_budgets = (0, 1, 2, 4, 8, 32) if is_v21 else (0, 2, 4, 8, 32)
+        if budgets != expected_budgets:
+            raise ValueError(f"候选预算必须为 {expected_budgets}")
         if group_size != 4 or top_groups != 2 or random_seeds != (11, 23, 37):
             raise ValueError("搜索必须使用 4 层组、前 2 组和固定的 3 个随机对照")
 
@@ -225,7 +227,10 @@ class V2QualityConfig:
         epsilon_tier = float(thresholds.get("epsilon_tier", -1))
         if epsilon_global != 0.01 or epsilon_tier != 0.02:
             raise ValueError("质量阈值必须固定为 global=0.01、tier=0.02")
-        if scoring.get("version") != "autokv-v2-score-v1":
+        if is_v21 and thresholds.get("min_capacity_ratio") != 1.5:
+            raise ValueError("v2.1 实测容量倍率目标必须固定为 1.5")
+        expected_scoring = "autokv-v2.1-score-v1" if is_v21 else "autokv-v2-score-v1"
+        if scoring.get("version") != expected_scoring:
             raise ValueError("不支持的 v2 评分版本")
         bootstrap_samples = int(scoring.get("bootstrap_samples", 0))
         if bootstrap_samples != 2000 or scoring.get("bootstrap_seed") != 20260902:
@@ -265,6 +270,14 @@ class V2QualityConfig:
             calculate_kv_scales=calculate_scales,
             enable_prefix_caching=prefix_caching,
         )
+
+    @property
+    def version(self) -> str:
+        return "2.1" if self.raw["name"] == "quality-v2.1" else "2.0"
+
+    @property
+    def min_capacity_ratio(self) -> float:
+        return float(self.raw["thresholds"].get("min_capacity_ratio", 1.5))
 
     def max_tokens_for(self, task: str) -> int:
         data = _mapping(self.raw["data"], "data")

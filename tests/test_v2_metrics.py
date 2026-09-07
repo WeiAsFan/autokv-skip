@@ -31,6 +31,26 @@ def result_rows(scores):
 
 
 class V2MetricsTests(unittest.TestCase):
+    def test_variable_scoring_preserves_names_duplicates_and_conflicts(self):
+        answers = [f"VAR-{i:02d}=VALV-{'AAAA1111' if i < 2 else 'BBBB2222'}" for i in range(4)]
+        sample = {"answer_mode": "variable_f1", "expected_answers": answers}
+        self.assertEqual(score_v2_output("|".join(answers), sample), 1.0)
+        self.assertEqual(score_v2_output(" | ".join(answers).replace("=", " = ").lower(), sample), 1.0)
+        self.assertAlmostEqual(score_v2_output(answers[0], sample), 0.4)
+        self.assertEqual(score_v2_output("VALV-AAAA1111|VALV-BBBB2222", sample), 0.0)
+        self.assertEqual(score_v2_output("|".join(answer + "F" for answer in answers), sample), 0.0)
+        swapped = "|".join(answers).replace("AAAA1111", "CCCC3333").replace("BBBB2222", "AAAA1111").replace("CCCC3333", "BBBB2222")
+        self.assertEqual(score_v2_output(swapped, sample), 0.0)
+        self.assertLess(score_v2_output("|".join(answers + ["VAR-00=VALV-BBBB2222"]), sample), 1.0)
+
+    def test_equal_zero_scores_are_not_a_valid_quality_reference(self):
+        config = load_v2_config(ROOT / "configs/v2.1/quality.json")
+        zero = aggregate_v2(result_rows({tier: [0.0] for tier in ("easy", "hard", "natural")}))
+        for endpoint in (True, False):
+            result = quality_constraints(zero, zero, config, endpoint=endpoint)
+            self.assertFalse(result["passed"])
+            self.assertFalse(result["checks"]["reference_valid"])
+
     def test_three_scoring_modes_have_known_outputs(self):
         self.assertEqual(
             score_v2_output(

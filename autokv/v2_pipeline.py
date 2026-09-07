@@ -1,4 +1,4 @@
-"""AutoKV-Skip v2.0 阶段 3–4 的条件式端到端编排。"""
+"""AutoKV-Skip v2.1 质量与容量主实验，以及独立的可选随机分析。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from autokv.commands import runtime_identity
 from autokv.config import Profile, load_profile
@@ -33,7 +33,7 @@ from autokv.v2_data import (
     load_frozen_v2_dataset,
     make_hard_rows,
 )
-from autokv.v2_metrics import aggregate_v2, paired_gap_summary, quality_constraints
+from autokv.v2_metrics import aggregate_v2, paired_gap_summary, quality_constraints, reference_is_valid
 from autokv.v2_policy import (
     Policy,
     endpoint_policies,
@@ -316,6 +316,7 @@ def _ensure_run_manifest(context: V2RunContext) -> Path:
     path = context.root / "runs" / context.run_id / "run-manifest.json"
     expected = {
         "schema_version": 2,
+        "experiment_version": context.config.version,
         "run_id": context.run_id,
         "git_commit": context.source.get("git_commit"),
         "git_dirty": context.source.get("git_dirty"),
@@ -402,462 +403,279 @@ def _read_policy_manifest(result_path: Path) -> Mapping[str, Any]:
     return value
 
 
-def _render_quality_report(
-    context: V2RunContext,
-    selection: Mapping[str, Any],
-    heldout_summaries: Sequence[Mapping[str, Any]],
-    capacity_rows: Sequence[Mapping[str, Any]],
-) -> Path:
-    report_path = (
-        context.root / "runs" / context.run_id / "report" / "QUALITY-v2.zh-CN.md"
-    )
+def _render_quality_report(context: V2RunContext, selection: Mapping[str, Any]) -> Path:
+    report_path = context.root / "runs" / context.run_id / "report/QUALITY-v2.zh-CN.md"
+    candidate, final = selection['candidate'], selection['final']
+    candidate_text = f"P{candidate['k']}，BF16 层 {candidate['bf16_layers']}" if candidate else '无有效候选'
+    final_text = f"P{final['k']}，BF16 层 {final['bf16_layers']}" if final else '基线无效，无法推荐'
     lines = [
-        "# AutoKV-Skip v2.0 质量选择报告",
-        "",
+        "# AutoKV-Skip v2.1 质量与容量报告", "",
         f"- 运行 ID：`{context.run_id}`",
-        f"- 源码提交（可空，仅作记录）：`{context.source.get('git_commit')}`",
-        "- 实际运行源码、配置与数据：同一运行目录的 `inputs/`",
-        f"- 数据身份：`{context.dataset_manifest['dataset_sha256']}`",
-        "- Prefix caching：启动命令显式关闭；日志若报告开启则停止",
-        f"- Calibration 决策：`{selection['calibration_decision']}`",
-        f"- Calibration 候选：`{selection['candidate']['name']}`",
-        f"- 最终策略 P*：`{selection['final']['name']}`",
-        "",
-        "## Calibration 端点",
-        "",
-        "| 策略 | S_easy | S_hard | S_natural | S_v2 |",
-        "|---|---:|---:|---:|---:|",
+        f"- 状态：`{selection['status']}`",
+        f"- Calibration 候选：{candidate_text}",
+        f"- 最终策略：{final_text}",
+        f"- 主实验达标：{'是' if selection['technical_goal_passed'] else '否'}",
+        f"- 留出集质量达标：{'是' if selection['quality_passed'] else '否'}",
+        f"- 容量验收：`{selection['capacity']['status']}`，目标至少 {context.config.min_capacity_ratio:.1f}×",
+        "- 实际源码、配置、数据和运行路径副本：`inputs/`",
+        "- KV 显存预算：16G；prefix caching 显式关闭；模型权重精度保持原样。",
+        "", str(selection['conclusion']), "",
+        "`complete` 表示本次流程已给出结果，不等于主实验达标。", "",
     ]
-    endpoint = selection["endpoint"]
-    for name in ("p32", "p0"):
-        aggregate = endpoint[name]["aggregate"]
-        scores = aggregate["scores"]
-        lines.append(
-            f"| {name} | {scores['easy']:.4f} | {scores['hard']:.4f} | "
-            f"{scores['natural']:.4f} | {aggregate['s_v2']:.4f} |"
-        )
-    gap = endpoint["gap_p32_minus_p0"]
-    lines.extend(
-        [
-            "",
-            "| P32 − P0 缺口 | 点估计 | 95% CI |",
-            "|---|---:|---:|",
-            *[
-                f"| {name} | {gap[name]['gap']:.4f} | "
-                f"[{gap[name]['ci95_low']:.4f}, {gap[name]['ci95_high']:.4f}] |"
-                for name in ("easy", "hard", "natural", "global")
-            ],
-            "",
-            "## 搜索轨迹",
-            "",
-        ]
-    )
-    if selection["search_status"] == "skipped_no_quality_gap":
-        lines.append("端点满足质量约束，组、单层和预算搜索均未运行。")
-    else:
-        group_text = "，".join(
-            f"{item['policy']['name']}({item['recovery_vs_p0']:+.4f})"
-            for item in selection["group_ranking"]
-        )
-        layer_text = "，".join(
-            f"L{item['policy']['bf16_layers'][0]}({item['recovery_vs_p0']:+.4f})"
-            for item in selection["layer_ranking"]
-        )
-        budget_text = "，".join(
-            f"P{item['policy']['k']}={'通过' if item['constraints']['passed'] else '未通过'}"
-            for item in selection["budget_trace"]
-        )
-        lines.extend(
-            [
-                f"- 八组恢复量排名：{group_text}",
-                f"- 八个候选层恢复量排名：{layer_text}",
-                f"- 预算早停轨迹：{budget_text}",
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "## Held-out 质量",
-            "",
-            "| 策略 | k | S_easy | S_hard | S_natural | S_v2 |",
-            "|---|---:|---:|---:|---:|---:|",
-        ]
-    )
-    for item in heldout_summaries:
-        policy = item["policy"]
-        aggregate = item["aggregate"]
-        scores = aggregate["scores"]
-        lines.append(
-            f"| {policy['name']} | {policy['k']} | {scores['easy']:.4f} | "
-            f"{scores['hard']:.4f} | {scores['natural']:.4f} | {aggregate['s_v2']:.4f} |"
-        )
-    lines.extend(
-        [
-            "",
-            f"Held-out 约束：{'通过' if selection['heldout_constraints']['passed'] else '未通过'}；"
-            f"Random-k 的 S_v2 中位数：{selection['random_s_v2_median'] if selection['random_s_v2_median'] is not None else '不适用'}。",
-            "",
-            "## 容量",
-            "",
-            "| 策略 | k | 理论 bytes/token | 理论容量 / P32 | vLLM 实测 tokens |",
-            "|---|---:|---:|---:|---:|",
-        ]
-    )
-    for row in capacity_rows:
-        lines.append(
-            f"| {row['name']} | {row['k']} | {row['bytes_per_token']} | "
-            f"{row['capacity_ratio_vs_p32']:.4f}× | "
-            f"{row['measured_tokens'] if row['measured_tokens'] is not None else '未记录'} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## 结论边界",
-            "",
-            str(selection["conclusion"]),
-            "",
-            "本报告只覆盖质量选择与容量。吞吐、TTFT、TPOT 和 ITL 属于后续阶段 5，"
-            "不能由本报告推断。Answer NLL 在当前 API 路径不可无额外请求地取得，因此记录为 null，"
-            "且从未进入 S_v2。",
-            "",
-        ]
-    )
+    for title, records in (("Calibration 端点", list(selection['endpoint'].values())), ("Held-out", selection['heldout'])):
+        lines.extend([f"## {title}", "", "| 策略 | k | Easy | Hard | Natural | S_v2 |", "|---|---:|---:|---:|---:|---:|"])
+        for record in records:
+            policy, aggregate = record['policy'], record['aggregate']
+            scores = aggregate['scores']
+            lines.append(f"| {policy['name']} | {policy['k']} | {scores['easy']:.4f} | {scores['hard']:.4f} | {scores['natural']:.4f} | {aggregate['s_v2']:.4f} |")
+        lines.extend(["", "| 策略 | 任务 | 绝对分数 |", "|---|---|---:|"])
+        for record in records:
+            for task, score in record['aggregate']['task_scores'].items():
+                lines.append(f"| {record['policy']['name']} | {task} | {score:.4f} |")
+        lines.append("")
+    lines.extend(["## 配对差与不确定性", "", "差值方向按名称中的左项减右项；区间用于解释不确定性，不参与运行门禁。", "", "| 比较 | 类别 | 分差 | 95% CI |", "|---|---|---:|---|"])
+    for name, differences in selection['paired_differences'].items():
+        for tier, value in differences.items():
+            lines.append(f"| {name} | {tier} | {value['gap']:+.6f} | [{value['ci95_low']:+.6f}, {value['ci95_high']:+.6f}] |")
+    lines.extend(["", "## 质量验收", "", f"全局下降 ≤ {context.config.epsilon_global}，Hard/Natural 各下降 ≤ {context.config.epsilon_tier}；BF16 与候选基础题均须全过。", "", "| 检查 | 通过 |", "|---|---|"])
+    for name, passed in selection['heldout_constraints'].get('checks', {}).items():
+        lines.append(f"| {name} | {'是' if passed else '否'} |")
+    lines.extend(["", "## 已评估候选", "", "只在 calibration 上选择；同预算按总分高、层号小排序。每个层集合在同一 split 只运行一次。", "", "| 策略 | BF16 层 | k | S_v2 | 质量通过 |", "|---|---|---:|---:|---|"])
+    for record in selection['candidate_pool']:
+        policy = record['policy']
+        lines.append(f"| {policy['name']} | {policy['bf16_layers']} | {policy['k']} | {record['aggregate']['s_v2']:.4f} | {'是' if record['constraints']['passed'] else '否'} |")
+    lines.extend(["", "## KV 容量", "", "| 策略 | k | bytes/token | 理论倍率 | 实测 tokens | 实测倍率 |", "|---|---:|---:|---:|---:|---:|"])
+    for row in selection['capacity_rows']:
+        measured = row['measured_tokens'] if row['measured_tokens'] is not None else '未记录'
+        ratio = f"{row['measured_ratio_vs_p32']:.4f}×" if row['measured_ratio_vs_p32'] is not None else '未验证'
+        lines.append(f"| {row['name']} | {row['k']} | {row['bytes_per_token']} | {row['capacity_ratio_vs_p32']:.4f}× | {measured} | {ratio} |")
+    lines.extend(["", "## 结论范围", "", "质量判定仅覆盖这份固定留出集与当前模型/运行时。选择的是已评估候选中的较小 BF16 预算，不保证全局最优。容量指同样 KV 显存预算下的 KV token 数，不等于模型上下文窗口或吞吐倍率。", "", "随机对照使用可选命令 `v2-random-controls`，不影响本报告的主验收；吞吐、TTFT、TPOT/ITL 属于后续性能扩展。", ""])
     atomic_write_text(report_path, "\n".join(lines))
     return report_path
 
 
-def _write_completed_manifest(context: V2RunContext, final: Policy) -> Path:
+def _write_completed_manifest(context: V2RunContext, selection: Mapping[str, Any]) -> Path:
     run_root = context.root / "runs" / context.run_id
     path = run_root / "completed-manifest.json"
-    artifacts: list[dict[str, str]] = []
-    for artifact in sorted(run_root.rglob("*")):
-        if (
-            not artifact.is_file()
-            or artifact == path
-            or "_incomplete" in artifact.relative_to(run_root).parts
-            or artifact.name.endswith(".working.jsonl")
-        ):
-            continue
-        artifacts.append(
-            {
-                "path": artifact.relative_to(run_root).as_posix(),
-            }
-        )
-    atomic_write_json(
-        path,
-        {
-            "schema_version": 2,
-            "complete": True,
-            "run_id": context.run_id,
-            "source_tree_sha256": context.source["tree_sha256"],
-            "dataset_sha256": context.dataset_manifest["dataset_sha256"],
-            "final_policy": final.record(),
-            "artifacts": artifacts,
-            "completed_at_utc": datetime.now(timezone.utc).isoformat(),
-        },
-    )
+    artifacts = [
+        {"path": artifact.relative_to(run_root).as_posix()}
+        for artifact in sorted(run_root.rglob("*"))
+        if artifact.is_file() and artifact != path
+        and "_incomplete" not in artifact.relative_to(run_root).parts
+        and not artifact.name.endswith(".working.jsonl")
+    ]
+    atomic_write_json(path, {
+        "schema_version": 2, "experiment_version": "2.1", "complete": True,
+        "run_id": context.run_id, "status": selection['status'],
+        "technical_goal_passed": selection['technical_goal_passed'],
+        "source_tree_sha256": context.source['tree_sha256'],
+        "dataset_sha256": context.dataset_manifest['dataset_sha256'],
+        "final_policy": selection['final'], "artifacts": artifacts,
+        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+    })
     return path
 
 
 def run_v2_pipeline(root: Path, *, port: int = 8000) -> Mapping[str, Any]:
-    """严格执行端点判断；只有有缺口时才做 coarse-to-fine 搜索。"""
-
+    """用已有候选搜索较小 BF16 预算，主验收只要求质量与实测容量。"""
     context = load_v2_run_context(root)
     _require_linux()
-    # 恢复中再次失败时，不能让旧完成标记把本次失败标成成功。
-    (context.root / "runs" / context.run_id / "completed-manifest.json").unlink(missing_ok=True)
-    runner = V2PolicyRunner(
-        context.config,
-        context.profile,
-        context.root,
-        context.lock,
-        context.run_id,
-        port=port,
-    )
+    run_root = context.root / "runs" / context.run_id
+    (run_root / "completed-manifest.json").unlink(missing_ok=True)
+    runner = V2PolicyRunner(context.config, context.profile, context.root, context.lock, context.run_id, port=port)
     p32, p0 = endpoint_policies(context.config.num_layers)
-    calibration_sha = _split_sha(context, "calibration")
-    heldout_sha = _split_sha(context, "heldout")
-    calibration_endpoint_dir = Path("quality/calibration/endpoints")
-    p32_cal = runner.run_policy(
-        p32,
-        context.calibration,
-        split="calibration",
-        split_sha256=calibration_sha,
-        relative_directory=calibration_endpoint_dir,
-    )
-    p0_cal = runner.run_policy(
-        p0,
-        context.calibration,
-        split="calibration",
-        split_sha256=calibration_sha,
-        relative_directory=calibration_endpoint_dir,
-    )
-    p32_cal_aggregate = aggregate_v2(read_jsonl(p32_cal))
-    p0_cal_aggregate = aggregate_v2(read_jsonl(p0_cal))
-    endpoint_constraints = quality_constraints(
-        p32_cal_aggregate, p0_cal_aggregate, context.config, endpoint=True
-    )
-    endpoint_gap = _gap(context, p32_cal, p0_cal)
-    endpoint_summary = {
-        "schema_version": 2,
-        "p32": {"policy": p32.record(), "aggregate": p32_cal_aggregate},
-        "p0": {"policy": p0.record(), "aggregate": p0_cal_aggregate},
-        "gap_p32_minus_p0": endpoint_gap,
-        "constraints": endpoint_constraints,
-    }
-    endpoint_summary_path = (
-        context.root
-        / "runs"
-        / context.run_id
-        / "quality"
-        / "calibration"
-        / "endpoint-summary.json"
-    )
-    atomic_write_json(endpoint_summary_path, endpoint_summary)
-    calibration_decision = (
-        "no_quality_gap" if endpoint_constraints["passed"] else "search_required"
-    )
-    failed_checks = [
-        name for name, passed in endpoint_constraints["checks"].items() if not passed
-    ]
-    decision = {
-        "schema_version": 2,
-        "run_id": context.run_id,
-        "dataset_sha256": context.dataset_manifest["dataset_sha256"],
-        "decision": calibration_decision,
-        "reason_code": (
-            "p0_within_frozen_quality_bounds"
-            if endpoint_constraints["passed"]
-            else "p0_failed_" + "_and_".join(failed_checks)
-        ),
-        "gap_p32_minus_p0": endpoint_gap,
-        "thresholds": endpoint_constraints["thresholds"],
-        "failed_checks": failed_checks,
-    }
-    atomic_write_json(
-        context.root / "runs" / context.run_id / "decision.json", decision
-    )
+    # 同一层集合在同一 split 复用；跨 split 必须独立评估。
+    results: dict[tuple[str, str], Path] = {}
 
-    group_ranking: tuple[dict[str, object], ...] = ()
-    layer_ranking: tuple[dict[str, object], ...] = ()
-    budget_trace: list[dict[str, Any]] = []
+    def evaluate(policy: Policy, split: str, directory: str) -> Path:
+        key = (split, policy.config_id)
+        if key not in results:
+            results[key] = runner.run_policy(
+                policy, context.calibration if split == 'calibration' else context.heldout,
+                split=split, split_sha256=_split_sha(context, split), relative_directory=Path(directory),
+            )
+        return results[key]
+
+    def record(policy: Policy, path: Path) -> dict[str, Any]:
+        return {**_policy_summary(policy, path), 'result_path': path.relative_to(context.root).as_posix()}
+
+    selection: dict[str, Any] = {
+        'schema_version': 2, 'experiment_version': '2.1', 'run_id': context.run_id,
+        'endpoint': {}, 'heldout': [], 'paired_differences': {}, 'candidate_pool': [],
+        'group_ranking': [], 'layer_ranking': [], 'budget_trace': [],
+        'candidate': None, 'final': None, 'quality_passed': False,
+        'heldout_constraints': {'passed': False, 'checks': {}},
+        'calibration_decision': 'invalid_reference', 'search_status': 'not_started',
+    }
+    candidate: Policy | None = None
+
+    def finish(status: str, conclusion: str, final: Policy | None) -> Mapping[str, Any]:
+        targets = [p32, p0] + ([candidate] if candidate is not None else [])
+        capacities: dict[str, dict[str, Any]] = {}
+        for policy in targets:
+            if policy.config_id in capacities:
+                continue
+            paths = [results[(split, policy.config_id)] for split in ('calibration', 'heldout') if (split, policy.config_id) in results]
+            if not paths:
+                continue
+            tokens = None
+            for path in paths:
+                capacity = _read_policy_manifest(path).get('capacity') or {}
+                observed = capacity.get('tokens')
+                if isinstance(observed, int) and not isinstance(observed, bool) and observed > 0:
+                    tokens = observed
+                    break
+            capacities[policy.config_id] = {'name': policy.name, 'k': policy.k, **theoretical_capacity(policy), 'measured_tokens': tokens}
+        reference_tokens = capacities.get(p32.config_id, {}).get('measured_tokens')
+        for row in capacities.values():
+            row['measured_ratio_vs_p32'] = row['measured_tokens'] / reference_tokens if reference_tokens and row['measured_tokens'] else None
+        candidate_capacity = capacities.get(candidate.config_id, {}) if candidate is not None else {}
+        ratio = candidate_capacity.get('measured_ratio_vs_p32')
+        capacity_status = 'unverified' if ratio is None else ('passed' if ratio + 1e-12 >= context.config.min_capacity_ratio else 'below_target')
+        goal_passed = selection['quality_passed'] and capacity_status == 'passed'
+        if status == 'quality_passed':
+            status = 'passed' if goal_passed else ('capacity_unverified' if ratio is None else 'capacity_below_target')
+            conclusion += (' 实测 KV 容量达到目标。' if goal_passed else ' 实测 KV 容量尚未验证。' if ratio is None else ' 实测 KV 容量未达到目标。')
+        selection.update({
+            'status': status, 'conclusion': conclusion, 'final': final.record() if final else None,
+            'candidate': candidate.record() if candidate else None, 'technical_goal_passed': goal_passed,
+            'capacity_rows': list(capacities.values()),
+            'capacity': {'status': capacity_status, 'reference_tokens': reference_tokens,
+                         'candidate_tokens': candidate_capacity.get('measured_tokens'), 'ratio_vs_p32': ratio,
+                         'min_ratio': context.config.min_capacity_ratio},
+            'server_starts_this_invocation': runner.server_starts, 'requests_this_invocation': runner.requests,
+        })
+        selection_path = run_root / 'selection.json'
+        atomic_write_json(selection_path, selection)
+        atomic_write_json(run_root / 'decision.json', {
+            'schema_version': 2, 'run_id': context.run_id, 'decision': selection['calibration_decision'],
+            'status': status, 'technical_goal_passed': goal_passed,
+        })
+        report_path = _render_quality_report(context, selection)
+        completed_path = _write_completed_manifest(context, selection)
+        return {
+            'complete': True, 'run_id': context.run_id, 'status': status,
+            'decision': selection['calibration_decision'], 'technical_goal_passed': goal_passed,
+            'quality_passed': selection['quality_passed'], 'capacity': selection['capacity'],
+            'candidate': selection['candidate'], 'final': selection['final'],
+            'selection_path': selection_path.relative_to(context.root).as_posix(),
+            'report_path': report_path.relative_to(context.root).as_posix(),
+            'completed_manifest_path': completed_path.relative_to(context.root).as_posix(),
+            'server_starts_this_invocation': runner.server_starts, 'requests_this_invocation': runner.requests,
+        }
+
+    p32_cal = evaluate(p32, 'calibration', 'quality/calibration/endpoints')
+    reference = aggregate_v2(read_jsonl(p32_cal))
+    selection['endpoint']['p32'] = record(p32, p32_cal)
+    if not reference_is_valid(reference):
+        return finish('invalid_reference', 'Calibration 的 BF16 基础题未全部通过，当前数据与运行无法用于判断量化质量；已保存结果，未运行 P0 或层搜索。', None)
+    p0_cal = evaluate(p0, 'calibration', 'quality/calibration/endpoints')
+    selection['endpoint']['p0'] = record(p0, p0_cal)
+    p0_aggregate = selection['endpoint']['p0']['aggregate']
+    selection['endpoint_constraints'] = quality_constraints(reference, p0_aggregate, context.config, endpoint=True)
+    selection['paired_differences']['calibration_P32-P0'] = _gap(context, p32_cal, p0_cal)
+    selection['calibration_decision'] = 'no_quality_gap' if selection['endpoint_constraints']['passed'] else 'search_required'
     candidate = p0
-    candidate_cal_path = p0_cal
 
-    if calibration_decision == "search_required":
-        group_scores: dict[Policy, float] = {}
-        for policy in group_policies(
-            context.config.num_layers, context.config.group_size
-        ):
-            path = runner.run_policy(
-                policy,
-                context.calibration,
-                split="calibration",
-                split_sha256=calibration_sha,
-                relative_directory=Path("quality/calibration/groups"),
-            )
-            group_scores[policy] = float(aggregate_v2(read_jsonl(path))["s_v2"])
-        group_ranking = rank_by_recovery(group_scores, float(p0_cal_aggregate["s_v2"]))
-        ordered_groups = sorted(
-            group_scores,
-            key=lambda policy: (
-                -(group_scores[policy] - float(p0_cal_aggregate["s_v2"])),
-                policy.bf16_layers,
-            ),
-        )
-        top_groups = ordered_groups[: context.config.top_groups]
+    if selection['calibration_decision'] == 'search_required':
+        pool: dict[str, tuple[Policy, dict[str, Any]]] = {}
 
-        layer_scores: dict[Policy, float] = {}
+        def consider(policy: Policy, directory: str) -> dict[str, Any]:
+            path = evaluate(policy, 'calibration', directory)
+            if policy.config_id not in pool:
+                item = record(policy, path)
+                item['constraints'] = quality_constraints(reference, item['aggregate'], context.config, endpoint=False)
+                pool[policy.config_id] = policy, item
+                selection['candidate_pool'].append(item)
+            return pool[policy.config_id][1]
+
+        def best() -> Policy | None:
+            valid = [(policy, item) for policy, item in pool.values() if item['constraints']['passed']]
+            return min(valid, key=lambda pair: (pair[0].k, -pair[1]['aggregate']['s_v2'], pair[0].bf16_layers))[0] if valid else None
+
+        group_scores = {}
+        for policy in group_policies(context.config.num_layers, context.config.group_size):
+            group_scores[policy] = consider(policy, 'quality/calibration/groups')['aggregate']['s_v2']
+        selection['group_ranking'] = list(rank_by_recovery(group_scores, p0_aggregate['s_v2']))
+        top_groups = sorted(group_scores, key=lambda policy: (-group_scores[policy], policy.bf16_layers))[:context.config.top_groups]
+        layer_scores = {}
         for policy in layer_policies(top_groups):
-            path = runner.run_policy(
-                policy,
-                context.calibration,
-                split="calibration",
-                split_sha256=calibration_sha,
-                relative_directory=Path("quality/calibration/layers"),
-            )
-            layer_scores[policy] = float(aggregate_v2(read_jsonl(path))["s_v2"])
-        layer_ranking = rank_by_recovery(layer_scores, float(p0_cal_aggregate["s_v2"]))
-        ordered_layers = [
-            policy.bf16_layers[0]
-            for policy in sorted(
-                layer_scores,
-                key=lambda policy: (
-                    -(layer_scores[policy] - float(p0_cal_aggregate["s_v2"])),
-                    policy.bf16_layers,
-                ),
-            )
-        ]
-        candidate = p32
-        candidate_cal_path = p32_cal
+            layer_scores[policy] = consider(policy, 'quality/calibration/layers')['aggregate']['s_v2']
+        selection['layer_ranking'] = list(rank_by_recovery(layer_scores, p0_aggregate['s_v2']))
+        ordered_layers = [policy.bf16_layers[0] for policy in sorted(layer_scores, key=lambda policy: (-layer_scores[policy], policy.bf16_layers))]
         for k in (2, 4, 8):
-            policy = nested_budget_policy(ordered_layers, k, context.config.num_layers)
-            path = runner.run_policy(
-                policy,
-                context.calibration,
-                split="calibration",
-                split_sha256=calibration_sha,
-                relative_directory=Path("quality/calibration/budgets"),
-            )
-            aggregate = aggregate_v2(read_jsonl(path))
-            constraints = quality_constraints(
-                p32_cal_aggregate, aggregate, context.config, endpoint=False
-            )
-            budget_trace.append(
-                {
-                    "policy": policy.record(),
-                    "aggregate": aggregate,
-                    "constraints": constraints,
-                }
-            )
-            if constraints["passed"]:
-                candidate = policy
-                candidate_cal_path = path
+            current = best()
+            if current is not None and current.k <= k:
                 break
-
-    heldout_endpoint_dir = Path("quality/heldout/endpoints")
-    p32_held = runner.run_policy(
-        p32,
-        context.heldout,
-        split="heldout",
-        split_sha256=heldout_sha,
-        relative_directory=heldout_endpoint_dir,
-    )
-    p0_held = runner.run_policy(
-        p0,
-        context.heldout,
-        split="heldout",
-        split_sha256=heldout_sha,
-        relative_directory=heldout_endpoint_dir,
-    )
-    p32_held_aggregate = aggregate_v2(read_jsonl(p32_held))
-    p0_held_aggregate = aggregate_v2(read_jsonl(p0_held))
-    heldout_records: list[tuple[Policy, Path]] = [(p32, p32_held), (p0, p0_held)]
-    random_records: list[tuple[Policy, Path]] = []
-    random_median: float | None = None
-    layer_selection_supported: bool | None = None
-
-    if candidate.k in {2, 4, 8}:
-        selected_held = runner.run_policy(
-            candidate,
-            context.heldout,
-            split="heldout",
-            split_sha256=heldout_sha,
-            relative_directory=Path("quality/heldout/selected"),
-        )
-        heldout_records.append((candidate, selected_held))
-        for random_policy in random_control_policies(
-            candidate, context.config.random_seeds
-        ):
-            path = runner.run_policy(
-                random_policy,
-                context.heldout,
-                split="heldout",
-                split_sha256=heldout_sha,
-                relative_directory=Path("quality/heldout/random"),
-            )
-            random_records.append((random_policy, path))
-            heldout_records.append((random_policy, path))
-        candidate_held_aggregate = aggregate_v2(read_jsonl(selected_held))
-        heldout_constraints = quality_constraints(
-            p32_held_aggregate,
-            candidate_held_aggregate,
-            context.config,
-            endpoint=False,
-        )
-        random_median = statistics.median(
-            float(aggregate_v2(read_jsonl(path))["s_v2"]) for _, path in random_records
-        )
-        layer_selection_supported = (
-            float(candidate_held_aggregate["s_v2"]) > random_median
-        )
-        final = candidate if heldout_constraints["passed"] else p32
-    elif candidate.k == 0:
-        heldout_constraints = quality_constraints(
-            p32_held_aggregate, p0_held_aggregate, context.config, endpoint=True
-        )
-        final = p0 if heldout_constraints["passed"] else p32
+            policy = nested_budget_policy(ordered_layers, k, context.config.num_layers)
+            item = consider(policy, 'quality/calibration/budgets')
+            selection['budget_trace'].append(item)
+        candidate = best() or p32
+        selection['search_status'] = 'completed'
     else:
-        heldout_constraints = quality_constraints(
-            p32_held_aggregate, p32_held_aggregate, context.config, endpoint=False
-        )
-        final = p32
+        selection['search_status'] = 'skipped_no_quality_gap'
+    selection['candidate'] = candidate.record()
 
-    if candidate.k == 0 and final.k == 0:
-        conclusion = "P0 在 calibration 与 held-out 均满足冻结质量约束；自动选择器正确停止，未进行层搜索。"
-    elif candidate.k in {2, 4, 8} and final == candidate:
-        conclusion = f"P{candidate.k} 在 held-out 满足质量约束；" + (
-            "且高于三组同预算随机策略中位数，层排序得到支持。"
-            if layer_selection_supported
-            else "但未高于三组同预算随机策略中位数，只能支持预算选择，不能声称层排序有附加价值。"
-        )
-    elif candidate.k in {0, 2, 4, 8} and final.k == 32:
-        conclusion = "Calibration 候选未通过 held-out，最终安全回退 P32；不得用 held-out 重新选层。"
-    else:
-        conclusion = (
-            "P2、P4、P8 均未在 calibration 满足质量约束，候选空间内只有 P32 通过。"
-        )
-
-    selection = {
-        "schema_version": 2,
-        "run_id": context.run_id,
-        "calibration_decision": calibration_decision,
-        "endpoint": endpoint_summary,
-        "candidate": candidate.record(),
-        "final": final.record(),
-        "group_ranking": list(group_ranking),
-        "layer_ranking": list(layer_ranking),
-        "budget_trace": budget_trace,
-        "heldout_constraints": heldout_constraints,
-        "random_s_v2_median": random_median,
-        "layer_selection_supported": layer_selection_supported,
-        "search_status": (
-            "skipped_no_quality_gap"
-            if calibration_decision == "no_quality_gap"
-            else "completed"
-        ),
-        "server_starts_this_invocation": runner.server_starts,
-        "requests_this_invocation": runner.requests,
-        "conclusion": conclusion,
-    }
-    selection_path = context.root / "runs" / context.run_id / "selection.json"
-    atomic_write_json(selection_path, selection)
-
-    heldout_summaries = [
-        _policy_summary(policy, path) for policy, path in heldout_records
-    ]
-    capacity_records: list[dict[str, Any]] = []
-    capacity_inputs: list[tuple[Policy, Path]] = [(p32, p32_cal), (p0, p0_cal)]
+    p32_held = evaluate(p32, 'heldout', 'quality/heldout/endpoints')
+    selection['heldout'].append(record(p32, p32_held))
+    reference_held = selection['heldout'][0]['aggregate']
+    if not reference_is_valid(reference_held):
+        return finish('invalid_reference', 'Held-out 的 BF16 基础题未全部通过，候选质量无法验证；保留 calibration 选择，不利用 held-out 重选。', None)
+    p0_held = evaluate(p0, 'heldout', 'quality/heldout/endpoints')
+    selection['heldout'].append(record(p0, p0_held))
+    selection['paired_differences']['heldout_P32-P0'] = _gap(context, p32_held, p0_held)
+    selection['p0_heldout_constraints'] = quality_constraints(reference_held, selection['heldout'][1]['aggregate'], context.config, endpoint=True)
+    candidate_held = evaluate(candidate, 'heldout', 'quality/heldout/selected')
     if candidate.k not in {0, 32}:
-        capacity_inputs.append((candidate, candidate_cal_path))
-    seen_capacity: set[str] = set()
-    for policy, result_path in capacity_inputs:
-        if policy.config_id in seen_capacity:
-            continue
-        seen_capacity.add(policy.config_id)
-        theoretical = theoretical_capacity(policy)
-        manifest = _read_policy_manifest(result_path)
-        capacity_records.append(
-            {
-                "name": policy.name,
-                "k": policy.k,
-                **theoretical,
-                "measured_tokens": manifest["capacity"]["tokens"],
-            }
-        )
-    report_path = _render_quality_report(
-        context, selection, heldout_summaries, capacity_records
-    )
-    completed_path = _write_completed_manifest(context, final)
-    return {
-        "complete": True,
-        "run_id": context.run_id,
-        "decision": calibration_decision,
-        "candidate": candidate.record(),
-        "final": final.record(),
-        "selection_path": selection_path.relative_to(context.root).as_posix(),
-        "report_path": report_path.relative_to(context.root).as_posix(),
-        "completed_manifest_path": completed_path.relative_to(context.root).as_posix(),
-        "server_starts_this_invocation": runner.server_starts,
-        "requests_this_invocation": runner.requests,
+        selection['heldout'].append(record(candidate, candidate_held))
+        selection['paired_differences']['heldout_P32-candidate'] = _gap(context, p32_held, candidate_held)
+        selection['paired_differences']['heldout_candidate-P0'] = _gap(context, candidate_held, p0_held)
+    constraints = quality_constraints(reference_held, aggregate_v2(read_jsonl(candidate_held)), context.config, endpoint=candidate.k == 0)
+    selection['heldout_constraints'] = constraints
+    selection['quality_passed'] = constraints['passed']
+    if not constraints['passed']:
+        return finish('heldout_failed', 'Calibration 候选未通过 held-out，安全回退 P32；本次技术目标未达成，不重新选层或改预算。', p32)
+    if candidate.k == 32:
+        return finish('no_qualifying_mixed_policy', '已评估的低 BF16 预算候选均未通过 calibration，回退 P32；本次没有取得容量收益。', p32)
+    conclusion = f'P{candidate.k} 在 calibration 与 held-out 满足预定质量约束。'
+    if candidate.k > 0 and selection['p0_heldout_constraints']['passed']:
+        conclusion += ' 留出集上的 P0 也满足约束，混合方案的必要性未得到独立支持；不据此重新选择。'
+    return finish('quality_passed', conclusion, candidate)
+
+
+def run_v2_random_controls(root: Path, *, port: int = 8000) -> Mapping[str, Any]:
+    """主实验之后的可选分析；不改候选、主验收或完成状态。"""
+    context = load_v2_run_context(root)
+    _require_linux()
+    run_root = context.root / 'runs' / context.run_id
+    selection = read_json(run_root / 'selection.json')
+    if not (run_root / 'completed-manifest.json').is_file():
+        raise ValueError('请先完成当前配置的 v2-run 主实验')
+    chosen = selection.get('candidate')
+    if not chosen or chosen['k'] not in {1, 2, 4, 8} or not selection['quality_passed']:
+        return {'complete': True, 'run_id': context.run_id, 'skipped': True, 'reason': '没有通过留出集的中间候选，无需随机对照'}
+    selected = Policy(chosen['name'], tuple(chosen['bf16_layers']), context.config.num_layers)
+    selected_record = next(item for item in selection['heldout'] if item['policy']['config_id'] == selected.config_id)
+    selected_path = context.root / selected_record['result_path']
+    runner = V2PolicyRunner(context.config, context.profile, context.root, context.lock, context.run_id, port=port)
+    output_path = run_root / 'random-controls.json'
+    atomic_write_json(output_path, {'complete': False, 'run_id': context.run_id, 'candidate': chosen})
+    records = []
+    for policy in random_control_policies(selected, context.config.random_seeds):
+        path = runner.run_policy(policy, context.heldout, split='heldout', split_sha256=_split_sha(context, 'heldout'), relative_directory=Path('quality/heldout/random'))
+        records.append({**_policy_summary(policy, path), 'candidate_minus_random': _gap(context, selected_path, path)})
+    median = statistics.median(item['aggregate']['s_v2'] for item in records)
+    result = {
+        'complete': True, 'run_id': context.run_id, 'candidate': chosen,
+        'controls': records, 'random_s_v2_median': median,
+        'observed_above_random_median': selected_record['aggregate']['s_v2'] > median,
+        'conclusion': '中位数比较仅描述本次观察；需结合配对差和区间解释，不自动宣称层排序有效，不影响主实验验收。',
+        'server_starts_this_invocation': runner.server_starts, 'requests_this_invocation': runner.requests,
     }
+    atomic_write_json(output_path, result)
+    lines = ['# v2.1 可选随机对照', '', result['conclusion'], '', f"所选策略 S_v2={selected_record['aggregate']['s_v2']:.6f}；三组随机中位数={median:.6f}。", '', '| 随机策略 | 类别 | 候选减随机 | 95% CI |', '|---|---|---:|---|']
+    for item in records:
+        for tier, value in item['candidate_minus_random'].items():
+            lines.append(f"| {item['policy']['name']} | {tier} | {value['gap']:+.6f} | [{value['ci95_low']:+.6f}, {value['ci95_high']:+.6f}] |")
+    atomic_write_text(run_root / 'report/RANDOM-v2.zh-CN.md', '\n'.join(lines) + '\n')
+    return result

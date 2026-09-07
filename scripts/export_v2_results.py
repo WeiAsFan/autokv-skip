@@ -50,7 +50,7 @@ def export_results(root: Path, run_id: str | None = None) -> Path:
     # 成功和失败都可导出，不要求 completed-manifest，也不重跑哈希门禁。
     sources = [
         root / name for name in
-        ("autokv", "scripts", "configs", "pyproject.toml", "data/v2/quality", "docs/v2.0", "README.md")
+        ("autokv", "scripts", "configs", "pyproject.toml", "data/v2/quality", "data/v2.1/quality", "docs/v2.1", "CONTEXT.md", "README.md")
     ]
     files: set[Path] = set(logs)
     for source in [*sources, *runs]:
@@ -91,13 +91,15 @@ def export_results(root: Path, run_id: str | None = None) -> Path:
         try:
             completed = json.loads((run / "completed-manifest.json").read_text(encoding="utf-8"))
             if isinstance(completed, dict) and completed.get("complete") is True:
-                status = "已完成"
+                if "technical_goal_passed" in completed:
+                    status = "主实验达标" if completed["technical_goal_passed"] else f"流程已完成，主实验未达标（{completed.get('status', '见报告')}）"
+                else:
+                    status = "已完成（旧版记录，需查看报告）"
         except (OSError, ValueError):
             pass
         lines.append(f"| {run.name} | {status} |")
-        report = run / "report/QUALITY-v2.zh-CN.md"
-        if report.is_file():
-            shutil.copy2(report, output / f"{run.name}-QUALITY-v2.zh-CN.md")
+        for report in sorted((run / "report").glob("*.zh-CN.md")):
+            shutil.copy2(report, output / f"{run.name}-{report.name}")
     if not runs:
         lines.append("| 尚未建立运行目录 | 仅 CLI 诊断 |")
     lines.extend(["", "## 解包", "", "```bash"])

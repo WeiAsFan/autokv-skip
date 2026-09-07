@@ -1,10 +1,11 @@
-"""生成并冻结 AutoKV-Skip v2.0 的三层质量数据。"""
+"""离线生成 AutoKV-Skip v2 的三层质量数据并保留版本身份。"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import random
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -334,7 +335,7 @@ def _multi_key_task(
 
 
 def _variable_task(
-    seed: int, target: int, variable_count: int, steps: int
+    seed: int, target: int, variable_count: int, steps: int, *, paired_answers: bool = True
 ) -> tuple[list[str], list[str], str, dict[str, Any]]:
     rng = random.Random(f"variables:{seed}:{target}")
     names = [f"VAR-{index:02d}" for index in range(variable_count)]
@@ -345,16 +346,33 @@ def _variable_task(
         f"STEP {index:02d}: SET {name} = {values[name]}"
         for index, name in enumerate(names)
     ]
+    query_names = tuple(names[index] for index in (0, 2, 5, 7) if index < len(names))
     for step in range(variable_count, variable_count + steps):
-        destination, source = rng.sample(names, 2)
+        if paired_answers:
+            # 仅依据已知状态保留两种查询值，避免复制赋值全部收敛；不查看模型输出。
+            choices = [
+                (destination, source)
+                for destination in names for source in names
+                if destination != source and len({
+                    values[source] if name == destination else values[name]
+                    for name in query_names
+                }) >= 2
+            ]
+            destination, source = rng.choice(choices)
+        else:
+            destination, source = rng.sample(names, 2)
         values[destination] = values[source]
         lines.append(f"STEP {step:02d}: SET {destination} = VALUE-OF {source}")
-    query_names = tuple(names[index] for index in (0, 2, 5, 7) if index < len(names))
-    expected = [values[name] for name in query_names]
+    expected = [f"{name}={values[name]}" if paired_answers else values[name] for name in query_names]
     question = (
         "Execute STEP lines in numeric order. Return the final values of "
         + ", ".join(query_names)
-        + " in any order. Output only value tokens separated by |."
+        + (
+            ". Output each variable and its value as VAR-00=VALV-XXXXXXXX, "
+            "separated by |. Include every requested variable exactly once, even "
+            "when values are equal. Add no explanation."
+            if paired_answers else " in any order. Output only value tokens separated by |."
+        )
     )
     return (
         lines,
@@ -428,6 +446,7 @@ def make_hard_rows(
                             target,
                             params["variable_count"],
                             params["variable_steps"],
+                            paired_answers=config.version == "2.1",
                         )
                     else:
                         lines, expected, question, metadata = _aggregation_task(
@@ -460,7 +479,7 @@ def make_hard_rows(
                     ).hexdigest()[:8]
                     rows.append(
                         _base_row(
-                            sample_id=f"v2-hard-{family}-{split}-{target}-{seed}-{digest}",
+                            sample_id=f"{'v2.1' if config.version == '2.1' else 'v2'}-hard-{family}-{split}-{target}-{seed}-{digest}",
                             split=split,
                             tier="hard",
                             task=family,
@@ -468,7 +487,10 @@ def make_hard_rows(
                             target_tokens=target,
                             max_tokens=config.max_tokens_for(family),
                             expected_answers=expected,
-                            answer_mode="set_f1",
+                            answer_mode=(
+                                "variable_f1" if family == "variable_tracking" and config.version == "2.1"
+                                else "set_f1"
+                            ),
                             metadata={
                                 "seed": seed,
                                 "difficulty": config.hard_difficulty,
@@ -663,6 +685,14 @@ def validate_v2_rows(
             hard_combinations.add(
                 (str(row.get("task")), int(row["target_tokens"]), int(metadata["seed"]))
             )
+            if row.get("task") == "variable_tracking" and config.version == "2.1":
+                if (
+                    row.get("answer_mode") != "variable_f1"
+                    or any(not isinstance(answer, str) or not re.fullmatch(r"VAR-[0-9]{2}=VALV-[A-F0-9]{8}", answer) for answer in answers)
+                    or [answer.split("=")[0] for answer in answers] != metadata.get("query_variables")
+                    or len(set(answer.split("=")[1] for answer in answers)) < 2
+                ):
+                    raise ValueError(f"{sample_id} 的变量配对答案无效或已退化")
         if tier == "natural":
             if prompt_tokens > config.natural_max_input_tokens:
                 raise ValueError(f"{sample_id} 超过 Natural 输入上限")
@@ -748,6 +778,48 @@ def freeze_v2_dataset(
         *make_hard_rows(config, codec),
         *make_natural_rows(config, codec, sources),
     ]
+    return _write_frozen_dataset(config, codec, rows, source_manifest, output_root, config_path=config_path)
+
+
+def upgrade_v2_dataset(
+    config: V2QualityConfig,
+    codec: PromptCodec,
+    legacy_root: Path,
+    output_root: Path,
+    *,
+    config_path: Path,
+    legacy_config_path: Path,
+) -> Mapping[str, Any]:
+    """离线重建合成题，复用已经选定的自然 QA，不读取模型实验输出。"""
+    from autokv.v2_config import load_v2_config
+
+    if legacy_root.resolve() == output_root.resolve():
+        raise ValueError("新数据不能覆盖 v2.0 历史数据")
+    legacy_config = load_v2_config(legacy_config_path)
+    manifest, calibration, heldout = load_frozen_v2_dataset(
+        legacy_config, legacy_root, config_path=legacy_config_path
+    )
+    natural = []
+    for row in (*calibration, *heldout):
+        if row["tier"] != "natural":
+            continue
+        rendered, count = codec.render_and_count(str(row["prompt"]))
+        natural.append(_base_row(
+            sample_id=str(row["sample_id"]).replace("v2-", "v2.1-", 1),
+            split=str(row["split"]), tier="natural", task=str(row["task"]),
+            fitted=FittedPrompt(str(row["prompt"]), rendered, count),
+            target_tokens=None, max_tokens=config.max_tokens_for(str(row["task"])),
+            expected_answers=row["expected_answers"], answer_mode="qa_f1", metadata=row["metadata"],
+        ))
+    rows = [*make_easy_rows(config, codec), *make_hard_rows(config, codec), *natural]
+    source = {**manifest["source"], "parent_dataset_sha256": manifest["dataset_sha256"]}
+    return _write_frozen_dataset(config, codec, rows, source, output_root, config_path=config_path)
+
+
+def _write_frozen_dataset(
+    config: V2QualityConfig, codec: PromptCodec, rows: list[dict[str, Any]],
+    source_manifest: Mapping[str, Any], output_root: Path, *, config_path: Path,
+) -> Mapping[str, Any]:
     rows.sort(
         key=lambda row: (
             str(row["split"]),
@@ -777,7 +849,8 @@ def freeze_v2_dataset(
     }
     source_identity = {
         key: source_manifest.get(key)
-        for key in ("repository", "revision", "split", "datasets", "rows", "files")
+        for key in ("repository", "revision", "split", "datasets", "rows", "files", "parent_dataset_sha256")
+        if key in source_manifest
     }
     identity = {
         "config_sha256": sha256_text_file(config_path),
@@ -789,7 +862,9 @@ def freeze_v2_dataset(
     }
     manifest = {
         "schema_version": 2,
-        "generator": "autokv-v2-data-v1",
+        "generator": "autokv-v2.1-data-v1" if config.version == "2.1" else "autokv-v2-data-v1",
+        "experiment_version": config.version,
+        "scoring_version": config.raw["scoring"]["version"],
         **identity,
         "dataset_sha256": _sha256_json(identity),
         "rows": len(rows),

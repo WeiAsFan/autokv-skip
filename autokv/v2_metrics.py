@@ -75,6 +75,11 @@ def score_v2_output(output: str, sample: Mapping[str, Any]) -> float:
         return score_generation(output, answers[0]).exact_match
     if mode == "qa_f1":
         return best_qa_f1(output, answers)
+    if mode == "variable_f1":
+        # 比较变量与值的配对；同值的不同变量仍然是不同答案。
+        pairs = re.findall(r"\bVAR-[0-9]{2}\s*=\s*VALV-[A-F0-9]{8}\b", output.upper())
+        canonical = "|".join(re.sub(r"\s+", "", pair) for pair in pairs)
+        return set_f1_score(canonical, answers, r"VAR-[0-9]{2}=VALV-[A-F0-9]{8}")
     if mode == "set_f1":
         metadata = sample.get("metadata")
         if not isinstance(metadata, Mapping) or not isinstance(
@@ -89,6 +94,7 @@ def aggregate_v2(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not rows:
         raise ValueError("不能聚合空结果")
     scores: dict[str, list[float]] = {tier: [] for tier in V2_TIERS}
+    task_scores: dict[str, list[float]] = {}
     easy_passes = 0
     sample_ids: set[str] = set()
     for row in rows:
@@ -110,6 +116,7 @@ def aggregate_v2(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"{sample_id} 含失败结果，不能聚合")
         sample_ids.add(sample_id)
         scores[str(tier)].append(float(score))
+        task_scores.setdefault(str(row.get("task", tier)), []).append(float(score))
         if tier == "easy" and float(score) == 1.0:
             easy_passes += 1
     if any(not values for values in scores.values()):
@@ -119,6 +126,7 @@ def aggregate_v2(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "rows": len(rows),
         "tier_rows": {tier: len(values) for tier, values in scores.items()},
         "scores": tier_scores,
+        "task_scores": {task: sum(values) / len(values) for task, values in sorted(task_scores.items())},
         "s_v2": sum(tier_scores.values()) / len(V2_TIERS),
         "easy_passes": easy_passes,
         "easy_total": len(scores["easy"]),
@@ -192,6 +200,11 @@ def paired_gap_summary(
     }
 
 
+def reference_is_valid(reference: Mapping[str, Any]) -> bool:
+    """正式 BF16 基础题必须有效；直接复用结果，不启动额外检查。"""
+    return int(reference["easy_total"]) > 0 and int(reference["easy_passes"]) == int(reference["easy_total"])
+
+
 def quality_constraints(
     reference: Mapping[str, Any],
     candidate: Mapping[str, Any],
@@ -207,6 +220,7 @@ def quality_constraints(
         raise ValueError("聚合结果缺少 tier scores")
     numerical_tolerance = 1e-12
     checks = {
+        "reference_valid": reference_is_valid(reference),
         "global": float(candidate["s_v2"])
         >= float(reference["s_v2"]) - config.epsilon_global - numerical_tolerance,
         "hard": float(candidate_scores["hard"])
@@ -215,11 +229,7 @@ def quality_constraints(
         >= float(reference_scores["natural"])
         - config.epsilon_tier
         - numerical_tolerance,
-        "easy": (
-            int(candidate["easy_passes"]) == int(candidate["easy_total"])
-            if endpoint
-            else int(candidate["easy_passes"]) == int(reference["easy_passes"])
-        ),
+        "easy": int(candidate["easy_passes"]) == int(candidate["easy_total"]),
     }
     return {
         "passed": all(checks.values()),
@@ -227,6 +237,6 @@ def quality_constraints(
         "thresholds": {
             "epsilon_global": config.epsilon_global,
             "epsilon_tier": config.epsilon_tier,
-            "easy_rule": "all_pass" if endpoint else "same_pass_count_as_p32",
+            "easy_rule": "reference_and_candidate_all_pass",
         },
     }

@@ -2225,6 +2225,7 @@ def _freeze_v2_data(root: Path, source_dir: str) -> Mapping[str, Any]:
         TransformersPromptCodec,
         freeze_v2_dataset,
         load_frozen_v2_dataset,
+        upgrade_v2_dataset,
     )
 
     config_path = root / V2_CONFIG_RELATIVE_PATH
@@ -2252,13 +2253,15 @@ def _freeze_v2_data(root: Path, source_dir: str) -> Mapping[str, Any]:
     if not source_root.is_absolute():
         source_root = root / source_root
     codec = TransformersPromptCodec(Path(str(lock["model_path"])))
-    manifest = freeze_v2_dataset(
-        config,
-        codec,
-        source_root.resolve(),
-        output_root,
-        config_path=config_path,
-    )
+    print("首次准备 v2.1 数据：使用现有 tokenizer 离线生成。", file=sys.stderr, flush=True)
+    legacy_root = root / "data/v2/quality"
+    if config.version == "2.1" and (legacy_root / "dataset-manifest.json").is_file():
+        manifest = upgrade_v2_dataset(
+            config, codec, legacy_root, output_root,
+            config_path=config_path, legacy_config_path=root / "configs/v2/quality.json",
+        )
+    else:
+        manifest = freeze_v2_dataset(config, codec, source_root.resolve(), output_root, config_path=config_path)
     return {
         "complete": True,
         "reused": False,
@@ -2336,11 +2339,17 @@ def build_parser() -> argparse.ArgumentParser:
     v2_data_parser.add_argument("--json", action="store_true")
     v2_run_parser = subparsers.add_parser(
         "v2-run",
-        help="执行 Quality v2 端点判断、条件搜索与 held-out 验证",
+        help="执行 v2.1 质量与容量主实验；首次自动离线准备数据",
     )
     v2_run_parser.add_argument("--project-root", default=str(REPOSITORY_ROOT))
     v2_run_parser.add_argument("--port", type=int, default=8000)
     v2_run_parser.add_argument("--json", action="store_true")
+    controls_parser = subparsers.add_parser(
+        "v2-random-controls", help="可选：对已确定的 v2.1 候选运行三组随机对照",
+    )
+    controls_parser.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    controls_parser.add_argument("--port", type=int, default=8000)
+    controls_parser.add_argument("--json", action="store_true")
     v2_pilot_parser = subparsers.add_parser(
         "v2-pilot",
         help="可选：用 9 条 BF16 Hard 样本预注册难度档位",
@@ -2358,8 +2367,15 @@ def _dispatch(args: argparse.Namespace) -> Mapping[str, Any]:
         return _freeze_v2_data(root, args.source_dir)
     if command == "v2-run":
         from autokv.v2_pipeline import run_v2_pipeline
+        from autokv.v2_config import V2_DATA_RELATIVE_ROOT
 
+        if not (root / V2_DATA_RELATIVE_ROOT / "dataset-manifest.json").is_file():
+            _freeze_v2_data(root, "data/v2/source/LongBench")
         return run_v2_pipeline(root, port=args.port)
+    if command == "v2-random-controls":
+        from autokv.v2_pipeline import run_v2_random_controls
+
+        return run_v2_random_controls(root, port=args.port)
     if command == "v2-pilot":
         from autokv.v2_pipeline import run_v2_pilot
 

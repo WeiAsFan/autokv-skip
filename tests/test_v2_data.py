@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 from autokv.io import sha256_file
 from autokv.v2_config import load_v2_config
@@ -52,6 +53,45 @@ def natural_sources():
 
 
 class V2DataTests(unittest.TestCase):
+    def test_v21_variable_answers_match_independent_step_execution(self):
+        config = load_v2_config(ROOT / "configs/v2.1/quality.json")
+        for row in make_hard_rows(config, WordCodec()):
+            if row["task"] != "variable_tracking":
+                continue
+            state = {}
+            for line in row["prompt"].splitlines():
+                if line.startswith("STEP "):
+                    name, value = line.split(": SET ", 1)[1].split(" = ")
+                    state[name] = state[value.split()[1]] if value.startswith("VALUE-OF ") else value
+            names = row["metadata"]["query_variables"]
+            self.assertEqual(row["expected_answers"], [f"{name}={state[name]}" for name in names])
+            self.assertGreaterEqual(len({state[name] for name in names}), 2)
+            self.assertEqual(row["answer_mode"], "variable_f1")
+
+    def test_first_v21_freeze_reuses_natural_data_offline_and_then_resumes(self):
+        from autokv.cli import _freeze_v2_data
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shutil.copytree(ROOT / "configs", root / "configs")
+            shutil.copytree(ROOT / "data/v2/quality", root / "data/v2/quality")
+            before = {p.name: p.read_bytes() for p in (root / "data/v2/quality").iterdir()}
+            with patch("autokv.v2_pipeline._load_v2_lock", return_value={"backend": "local_vllm", "model_path": str(root / "model")}), patch("autokv.v2_data.TransformersPromptCodec", return_value=WordCodec()):
+                first = _freeze_v2_data(root, "missing-source")
+            second = _freeze_v2_data(root, "missing-source")
+            self.assertFalse(first["reused"])
+            self.assertTrue(second["reused"])
+            self.assertEqual(first["dataset_sha256"], second["dataset_sha256"])
+            self.assertEqual(before, {p.name: p.read_bytes() for p in (root / "data/v2/quality").iterdir()})
+            config_path = root / "configs/v2.1/quality.json"
+            config = load_v2_config(config_path)
+            manifest, calibration, heldout = load_frozen_v2_dataset(config, root / "data/v2.1/quality", config_path=config_path)
+            self.assertEqual(manifest["scoring_version"], "autokv-v2.1-score-v1")
+            self.assertEqual((len(calibration), len(heldout)), (27, 18))
+            old = [json.loads(line) for name in ("calibration.jsonl", "heldout.jsonl") for line in before[name].decode("utf-8").splitlines()]
+            natural = lambda rows: {(r["split"], r["metadata"]["source_id"]): (r["prompt"], r["expected_answers"]) for r in rows if r["tier"] == "natural"}
+            self.assertEqual(natural(old), natural([*calibration, *heldout]))
+
     @classmethod
     def setUpClass(cls):
         cls.config = load_v2_config(ROOT / "configs/v2/quality.json")
@@ -146,8 +186,6 @@ class V2DataTests(unittest.TestCase):
             self.assertEqual((len(calibration), len(heldout)), (27, 18))
 
     def test_published_dataset_accepts_crlf_but_rejects_content_changes(self):
-        from autokv.cli import _freeze_v2_data
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             shutil.copytree(ROOT / "configs", root / "configs")
@@ -156,12 +194,12 @@ class V2DataTests(unittest.TestCase):
             calibration_path = root / "data/v2/quality/calibration.jsonl"
             for path in (config_path, calibration_path):
                 path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
-            result = _freeze_v2_data(root, "missing-source")
-            self.assertTrue(result["reused"])
-            self.assertEqual((result["calibration_rows"], result["heldout_rows"]), (27, 18))
+            config = load_v2_config(config_path)
+            _, calibration, heldout = load_frozen_v2_dataset(config, root / "data/v2/quality", config_path=config_path)
+            self.assertEqual((len(calibration), len(heldout)), (27, 18))
             calibration_path.write_bytes(calibration_path.read_bytes().replace(b'"prompt":', b'"changed_prompt":', 1))
             with self.assertRaisesRegex(ValueError, "calibration hash"):
-                _freeze_v2_data(root, "missing-source")
+                load_frozen_v2_dataset(config, root / "data/v2/quality", config_path=config_path)
 
 
 if __name__ == "__main__":

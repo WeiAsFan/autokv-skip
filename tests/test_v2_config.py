@@ -9,6 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class V2ConfigTests(unittest.TestCase):
+    def test_v21_has_explicit_capacity_target_and_p1(self):
+        config = load_v2_config(ROOT / "configs/v2.1/quality.json")
+        self.assertEqual(config.version, "2.1")
+        self.assertEqual(config.candidate_budgets, (0, 1, 2, 4, 8, 32))
+        self.assertEqual(config.min_capacity_ratio, 1.5)
+
     def test_loads_the_only_v2_quality_configuration(self):
         config = load_v2_config(ROOT / "configs/v2/quality.json")
 

@@ -11,6 +11,25 @@ from scripts.export_v2_results import export_results
 
 
 class V2ExportTests(unittest.TestCase):
+    def test_v21_data_and_both_reports_are_exported_without_claiming_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            run = root / "runs/test-run"
+            (run / "report").mkdir(parents=True)
+            (run / "run-manifest.json").write_text(json.dumps({"schema_version": 2}))
+            (run / "completed-manifest.json").write_text(json.dumps({"complete": True, "technical_goal_passed": False, "status": "capacity_unverified"}))
+            for name, content in (("QUALITY-v2.zh-CN.md", "主报告"), ("RANDOM-v2.zh-CN.md", "随机报告")):
+                (run / "report" / name).write_text(content, encoding="utf-8")
+            data = root / "data/v2.1/quality"
+            data.mkdir(parents=True)
+            (data / "calibration.jsonl").write_text("{}\n")
+            output = export_results(root)
+            self.assertEqual((output / "test-run-QUALITY-v2.zh-CN.md").read_text(encoding="utf-8"), "主报告")
+            self.assertEqual((output / "test-run-RANDOM-v2.zh-CN.md").read_text(encoding="utf-8"), "随机报告")
+            self.assertIn("主实验未达标", (output / "README.zh-CN.md").read_text(encoding="utf-8"))
+            with tarfile.open(output / "autokv-v2.tar.gz") as archive:
+                self.assertIn("autokv-skip/data/v2.1/quality/calibration.jsonl", archive.getnames())
+
     def test_incomplete_runs_logs_and_input_snapshot_survive_split_archive(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
