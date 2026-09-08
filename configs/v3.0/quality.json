@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "quality-v3.0",
+  "model": {
+    "id": "mistralai/Mistral-7B-Instruct-v0.3",
+    "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+    "num_layers": 32, "num_kv_heads": 8, "head_dim": 128, "max_model_len": 32768
+  },
+  "runtime": {
+    "attention_backend": "FLASHINFER", "kv_cache_dtype": "fp8_e4m3",
+    "kv_cache_memory": "16G", "calculate_kv_scales": false,
+    "enable_prefix_caching": false, "seed": 42
+  },
+  "data": {
+    "tasks": ["multi_key", "multi_value", "qa_single", "qa_multi"],
+    "sources": ["squad-v2.0-train", "squad-v2.0-dev", "hotpot-v1.1-train", "hotpot-v1.1-dev-distractor"],
+    "target_lengths": [4096, 8192, 16384, 24576], "input_tolerance_tokens": 128,
+    "per_cell": {"development": 4, "experiment": 16, "test": 64},
+    "seed": 20260908, "max_tokens": 128,
+    "retrieval": {"key_records": 32, "query_keys": 3, "values": 4, "distractors": 28}
+  },
+  "search": {
+    "beam_width": 2, "schedule": "progressive", "fidelity_samples": [32, 96, 256],
+    "promotion_win_fraction": 0.05, "max_bf16_layers": null,
+    "max_requests": null, "max_seconds": null
+  },
+  "thresholds": {"epsilon_global": 0.01, "epsilon_task": 0.02, "min_capacity_ratio": 1.5},
+  "scoring": {"version": "autokv-v3-score-v1", "bootstrap_samples": 2000, "bootstrap_seed": 20260912}
+}

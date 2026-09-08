@@ -6,4 +6,7 @@ __pycache__/
 runs/
 artifacts/
 data/v2/source/
+data/v3.0/source/
+data/v3.0/development/
+data/v3.0/quality/
 *.tmp

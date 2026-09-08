@@ -76,6 +76,7 @@ class TransformersPromptCodec:
         if not isinstance(template, str) or not template:
             raise ValueError("冻结 tokenizer 没有 chat_template")
         self.template_sha256 = hashlib.sha256(template.encode("utf-8")).hexdigest()
+        self.template_text = template
 
     def render_and_count(self, user_prompt: str) -> tuple[str, int]:
         rendered = self._tokenizer.apply_chat_template(

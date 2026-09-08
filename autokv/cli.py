@@ -2357,12 +2357,30 @@ def build_parser() -> argparse.ArgumentParser:
     v2_pilot_parser.add_argument("--project-root", default=str(REPOSITORY_ROOT))
     v2_pilot_parser.add_argument("--port", type=int, default=8000)
     v2_pilot_parser.add_argument("--json", action="store_true")
+    v3_data = subparsers.add_parser("v3-make-data", help="离线构造按来源隔离的 v3 数据")
+    v3_data.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    v3_data.add_argument("--source-dir", default="data/v3.0/source")
+    v3_data.add_argument("--mode", choices=("development", "formal"), default="formal")
+    v3_data.add_argument("--json", action="store_true")
+    v3_run = subparsers.add_parser("v3-run", help="v3 增量选层、独立测试与质量/容量报告")
+    v3_run.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    v3_run.add_argument("--port", type=int, default=8010)
+    v3_run.add_argument("--development", action="store_true", help="仅用独立开发样本评估 BF16")
+    v3_run.add_argument("--json", action="store_true")
     return parser
 
 
 def _dispatch(args: argparse.Namespace) -> Mapping[str, Any]:
     root = _resolved_root(args.project_root)
     command = args.command
+    if command == "v3-make-data":
+        from autokv.v3_data import make_data as make_v3_data
+
+        return make_v3_data(root, (root / args.source_dir).resolve(), args.mode)
+    if command == "v3-run":
+        from autokv.v3_pipeline import run_pipeline as run_v3
+
+        return run_v3(root, port=args.port, development=args.development)
     if command == "v2-freeze-data":
         return _freeze_v2_data(root, args.source_dir)
     if command == "v2-run":
@@ -2415,6 +2433,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         payload = _dispatch(args)
         _emit(payload, args.json)
+        if args.command == "v3-run" and payload.get("complete") is False:
+            return EXIT_INCOMPLETE
         return 0
     except IncompleteDataError as exc:
         print(f"incomplete: {exc}", file=sys.stderr)
@@ -2423,7 +2443,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"server/http error: {exc}", file=sys.stderr)
         return EXIT_HTTP
     except (DoctorError, IndexError, KeyError, ValueError, TypeError) as exc:
-        print(f"invalid/gate error: {exc}", file=sys.stderr)
+        label = "配置或数据错误" if args.command.startswith("v3-") else "invalid/gate error"
+        print(f"{label}: {exc}", file=sys.stderr)
         return EXIT_INVALID
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         print(f"external command/error: {exc}", file=sys.stderr)
