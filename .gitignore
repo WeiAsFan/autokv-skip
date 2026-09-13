@@ -9,4 +9,6 @@ data/v2/source/
 data/v3.0/source/
 data/v3.0/development/
 data/v3.0/quality/
+data/v4.0/source/
+data/v4.0/v4-*/
 *.tmp

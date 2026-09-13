@@ -1,0 +1,628 @@
+{
+  "purpose": "真实 tokenizer 的 CPU 布局检查，无模型推理或质量结论",
+  "model_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "transformers": "4.57.3",
+  "tokenizers": "0.22.2",
+  "background": "tests.v4_helpers.sources 测试夹具",
+  "split": "discovery",
+  "batch_id": "discovery",
+  "sample_indices": [
+    0,
+    1,
+    2
+  ],
+  "conditions": [
+    {
+      "condition": {
+        "condition_id": "single_lookup-l8192-r16",
+        "task": "single_lookup",
+        "length_bucket": 8192,
+        "record_count": 16
+      },
+      "generated": [
+        {
+          "tokens": 8200,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8193,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8198,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l8192-r64",
+        "task": "single_lookup",
+        "length_bucket": 8192,
+        "record_count": 64
+      },
+      "generated": [
+        {
+          "tokens": 8205,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8218,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8197,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l8192-r128",
+        "task": "single_lookup",
+        "length_bucket": 8192,
+        "record_count": 128
+      },
+      "generated": [
+        {
+          "tokens": 8220,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8243,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8225,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l8192-r256",
+        "task": "single_lookup",
+        "length_bucket": 8192,
+        "record_count": 256
+      },
+      "generated": [
+        {
+          "tokens": 8265,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8264,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 8253,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l16384-r16",
+        "task": "single_lookup",
+        "length_bucket": 16384,
+        "record_count": 16
+      },
+      "generated": [
+        {
+          "tokens": 16391,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16390,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16388,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l16384-r64",
+        "task": "single_lookup",
+        "length_bucket": 16384,
+        "record_count": 64
+      },
+      "generated": [
+        {
+          "tokens": 16402,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16400,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16407,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l16384-r128",
+        "task": "single_lookup",
+        "length_bucket": 16384,
+        "record_count": 128
+      },
+      "generated": [
+        {
+          "tokens": 16414,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16415,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16420,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l16384-r256",
+        "task": "single_lookup",
+        "length_bucket": 16384,
+        "record_count": 256
+      },
+      "generated": [
+        {
+          "tokens": 16427,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16449,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 16450,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l24576-r16",
+        "task": "single_lookup",
+        "length_bucket": 24576,
+        "record_count": 16
+      },
+      "generated": [
+        {
+          "tokens": 24581,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24584,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24579,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l24576-r64",
+        "task": "single_lookup",
+        "length_bucket": 24576,
+        "record_count": 64
+      },
+      "generated": [
+        {
+          "tokens": 24590,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24584,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24591,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l24576-r128",
+        "task": "single_lookup",
+        "length_bucket": 24576,
+        "record_count": 128
+      },
+      "generated": [
+        {
+          "tokens": 24626,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24608,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24609,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "single_lookup-l24576-r256",
+        "task": "single_lookup",
+        "length_bucket": 24576,
+        "record_count": 256
+      },
+      "generated": [
+        {
+          "tokens": 24629,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24626,
+          "distance_fraction": null,
+          "adjusted": false
+        },
+        {
+          "tokens": 24657,
+          "distance_fraction": null,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l8192-r16",
+        "task": "two_hop_lookup",
+        "length_bucket": 8192,
+        "record_count": 16
+      },
+      "generated": [
+        {
+          "tokens": 8208,
+          "distance_fraction": 0.49975633528265107,
+          "adjusted": false
+        },
+        {
+          "tokens": 8201,
+          "distance_fraction": 0.8134373856846726,
+          "adjusted": false
+        },
+        {
+          "tokens": 8206,
+          "distance_fraction": 0.5660492322690714,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l8192-r64",
+        "task": "two_hop_lookup",
+        "length_bucket": 8192,
+        "record_count": 64
+      },
+      "generated": [
+        {
+          "tokens": 8234,
+          "distance_fraction": 0.5699538498906971,
+          "adjusted": false
+        },
+        {
+          "tokens": 8231,
+          "distance_fraction": 0.41052120034017736,
+          "adjusted": false
+        },
+        {
+          "tokens": 8216,
+          "distance_fraction": 0.6194011684518014,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l8192-r128",
+        "task": "two_hop_lookup",
+        "length_bucket": 8192,
+        "record_count": 128
+      },
+      "generated": [
+        {
+          "tokens": 8244,
+          "distance_fraction": 0.7973071324599709,
+          "adjusted": false
+        },
+        {
+          "tokens": 8243,
+          "distance_fraction": 0.4264224190222007,
+          "adjusted": false
+        },
+        {
+          "tokens": 8244,
+          "distance_fraction": 0.4069626394953906,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l8192-r256",
+        "task": "two_hop_lookup",
+        "length_bucket": 8192,
+        "record_count": 256
+      },
+      "generated": [],
+      "structural_errors": [
+        "完整记录/问题/模板至少需要 15435 tokens，目标 8192±128",
+        "完整记录/问题/模板至少需要 15435 tokens，目标 8192±128",
+        "完整记录/问题/模板至少需要 15435 tokens，目标 8192±128"
+      ]
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l16384-r16",
+        "task": "two_hop_lookup",
+        "length_bucket": 16384,
+        "record_count": 16
+      },
+      "generated": [
+        {
+          "tokens": 16392,
+          "distance_fraction": 0.5653977550024402,
+          "adjusted": false
+        },
+        {
+          "tokens": 16403,
+          "distance_fraction": 0.8355178930683411,
+          "adjusted": false
+        },
+        {
+          "tokens": 16396,
+          "distance_fraction": 0.8690534276652843,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l16384-r64",
+        "task": "two_hop_lookup",
+        "length_bucket": 16384,
+        "record_count": 64
+      },
+      "generated": [
+        {
+          "tokens": 16414,
+          "distance_fraction": 0.5293042524674059,
+          "adjusted": false
+        },
+        {
+          "tokens": 16423,
+          "distance_fraction": 0.5452718748097181,
+          "adjusted": false
+        },
+        {
+          "tokens": 16425,
+          "distance_fraction": 0.4747640791476408,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l16384-r128",
+        "task": "two_hop_lookup",
+        "length_bucket": 16384,
+        "record_count": 128
+      },
+      "generated": [
+        {
+          "tokens": 16465,
+          "distance_fraction": 0.4280595201943517,
+          "adjusted": false
+        },
+        {
+          "tokens": 16473,
+          "distance_fraction": 0.651975960662903,
+          "adjusted": false
+        },
+        {
+          "tokens": 16461,
+          "distance_fraction": 0.42312131705242695,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l16384-r256",
+        "task": "two_hop_lookup",
+        "length_bucket": 16384,
+        "record_count": 256
+      },
+      "generated": [
+        {
+          "tokens": 16474,
+          "distance_fraction": 0.5346606774311036,
+          "adjusted": false
+        },
+        {
+          "tokens": 16492,
+          "distance_fraction": 0.4364540383216105,
+          "adjusted": false
+        },
+        {
+          "tokens": 16482,
+          "distance_fraction": 0.6763135541803179,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l24576-r16",
+        "task": "two_hop_lookup",
+        "length_bucket": 24576,
+        "record_count": 16
+      },
+      "generated": [
+        {
+          "tokens": 24576,
+          "distance_fraction": 0.4686686197916667,
+          "adjusted": false
+        },
+        {
+          "tokens": 24587,
+          "distance_fraction": 0.5339000284703298,
+          "adjusted": false
+        },
+        {
+          "tokens": 24593,
+          "distance_fraction": 0.4300817305737405,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l24576-r64",
+        "task": "two_hop_lookup",
+        "length_bucket": 24576,
+        "record_count": 64
+      },
+      "generated": [
+        {
+          "tokens": 24613,
+          "distance_fraction": 0.760654938447162,
+          "adjusted": false
+        },
+        {
+          "tokens": 24612,
+          "distance_fraction": 0.5242970908499919,
+          "adjusted": false
+        },
+        {
+          "tokens": 24616,
+          "distance_fraction": 0.8459538511537211,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l24576-r128",
+        "task": "two_hop_lookup",
+        "length_bucket": 24576,
+        "record_count": 128
+      },
+      "generated": [
+        {
+          "tokens": 24641,
+          "distance_fraction": 0.64684874802159,
+          "adjusted": false
+        },
+        {
+          "tokens": 24661,
+          "distance_fraction": 0.43992538826487165,
+          "adjusted": false
+        },
+        {
+          "tokens": 24642,
+          "distance_fraction": 0.6944241538836133,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    },
+    {
+      "condition": {
+        "condition_id": "two_hop_lookup-l24576-r256",
+        "task": "two_hop_lookup",
+        "length_bucket": 24576,
+        "record_count": 256
+      },
+      "generated": [
+        {
+          "tokens": 24585,
+          "distance_fraction": 0.9140126093146227,
+          "adjusted": false
+        },
+        {
+          "tokens": 24561,
+          "distance_fraction": 0.44717234640283376,
+          "adjusted": false
+        },
+        {
+          "tokens": 24544,
+          "distance_fraction": 0.7436440677966102,
+          "adjusted": false
+        }
+      ],
+      "structural_errors": []
+    }
+  ]
+}

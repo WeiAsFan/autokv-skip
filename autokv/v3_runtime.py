@@ -108,10 +108,11 @@ def recover_rows(path):
 
 class V3PolicyRunner:
     def __init__(self, config, root, run_dir, environment, samples, *, port=8010,
-                 client_factory=VllmClient, process_factory=LocalVllmProcess.start):
+                 client_factory=VllmClient, process_factory=LocalVllmProcess.start, scorer=score_output):
         self.config, self.root, self.run_dir, self.environment = config, root, run_dir, environment
         self.samples = {split: {r["sample_id"]: r for r in rows} for split, rows in samples.items()}
         self.port, self.client_factory, self.process_factory = port, client_factory, process_factory
+        self.scorer = scorer
         self.phase = "endpoints"
         self.context_id = identity({"config": config.raw, "environment": environment})
         self._cached = {}
@@ -131,7 +132,7 @@ class V3PolicyRunner:
                     raise ValueError("结果包含错误、重复样本或不同策略")
                 if any(row.get(k) != sample[k] for k in ("split", "task", "length_bucket", "source_group_id")):
                     raise ValueError("缓存行的分层元数据与输入不一致")
-                row["task_score"] = score_output(row["output_text"], sample)
+                row["task_score"] = self.scorer(row["output_text"], sample)
                 indexed[row["sample_id"]] = row
             self._cached[key] = indexed
         return self._cached[key]
@@ -219,15 +220,17 @@ class V3PolicyRunner:
                     raise ValueError(f"服务端 prompt token 与数据不一致：{sample['sample_id']}")
                 if type(usage.get("completion_tokens")) is not int or usage["completion_tokens"] < 0:
                     raise ValueError("响应缺少有效 completion_tokens")
-                row = {"schema_version": 3, "sample_id": sample["sample_id"], "split": split,
+                row = {"schema_version": self.config.raw["schema_version"], "sample_id": sample["sample_id"], "split": split,
                        "task": sample["task"], "length_bucket": sample["length_bucket"],
                        "source_group_id": sample["source_group_id"], "policy_config_id": policy.config_id,
                        "sample_signature": identity(sample), "context_id": self.context_id,
                        "prompt_tokens": usage["prompt_tokens"], "output_tokens": usage["completion_tokens"],
-                       "output_text": output, "task_score": score_output(output, sample),
+                       "output_text": output, "task_score": self.scorer(output, sample),
                        "finish_reason": response["choices"][0].get("finish_reason"),
                        "e2e_ms": (time.monotonic()-request_started)*1000, "retry_count": retries,
                        "attempt": stem, "error": None, "timestamp": utc_now()}
+                row.update({k: sample[k] for k in ("condition_id", "record_count", "base_instance_id", "batch_id",
+                                                 "evidence_positions") if k in sample})
                 append_jsonl(directory / f"{split}.jsonl", row)
                 cached[row["sample_id"]] = row
                 if len(cached) % 16 == 0:
@@ -258,7 +261,8 @@ class V3PolicyRunner:
 
     def statistics(self):
         phases = {}
-        for phase in ("development", "endpoints", "search", "test"):
+        names = dict.fromkeys(("development", "endpoints", "search", "test", *sorted({a["phase"] for a in self._attempts})))
+        for phase in names:
             attempts = [a for a in self._attempts if a["phase"] == phase]
             phases[phase] = {key: sum(a.get(key, 0) for a in attempts)
                              for key in ("requests", "retries", "server_starts", "seconds")}

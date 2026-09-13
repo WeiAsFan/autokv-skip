@@ -70,6 +70,10 @@ class V3Config:
         return obj
 
     @property
+    def tasks(self): return TASKS
+    @property
+    def data_root(self): return Path("data/v3.0")
+    @property
     def num_layers(self): return self.raw["model"]["num_layers"]
     @property
     def model_id(self): return self.raw["model"]["id"]
@@ -82,7 +86,7 @@ class V3Config:
     @property
     def max_tokens(self): return self.raw["data"]["max_tokens"]
     @property
-    def cells(self): return len(TASKS) * len(self.lengths)
+    def cells(self): return len(self.tasks) * len(self.lengths)
     def per_cell(self, split): return self.raw["data"]["per_cell"][split]
     @property
     def experiment_size(self): return self.cells * self.per_cell("experiment")
@@ -99,7 +103,7 @@ class V3Config:
     @property
     def epsilons(self):
         return {"all": self.raw["thresholds"]["epsilon_global"],
-                **{t: self.raw["thresholds"]["epsilon_task"] for t in TASKS}}
+                **{t: self.raw["thresholds"]["epsilon_task"] for t in self.tasks}}
     @property
     def max_layers(self):
         limit = math.floor(2 * self.num_layers / self.capacity_ratio - self.num_layers + 1e-12)

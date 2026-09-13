@@ -61,7 +61,7 @@ def test_use(directory, rows):
     current = {"questions": sorted({r["source_question_id"] for r in rows}),
                "evidence": sorted({d for r in rows for d in r["evidence_document_ids"]})}
     reused = []
-    for path in sorted(directory.parent.glob("v3-*/test-use.json")):
+    for path in sorted([*directory.parent.glob("v3-*/test-use.json"), *directory.parent.glob("v4-*/test-use.json")]):
         if path.parent == directory or not any(p.stat().st_size for p in path.parent.glob("policies/*/test.jsonl")):
             continue
         prior = read_json(path)
@@ -76,7 +76,7 @@ def coverage(directory, config):
               "successful_answers": 0, "input_tokens": 0, "output_tokens": 0,
               "length_finished": 0, "empty_answers": 0}
     for path in sorted(directory.glob("policies/*/*.jsonl")):
-        if path.stem not in {"experiment", "test", "development"}:
+        if path.stem not in {"experiment", "test", "development", "discovery", "confirmation"}:
             continue
         rows = recover_rows(path)
         if path.stem == "experiment":
@@ -91,7 +91,8 @@ def coverage(directory, config):
 
 
 def render_report(directory, config, result):
-    lines = ["# AutoKV-Skip v3.0 质量与容量报告", "", f"运行：`{directory.name}`；状态：`{result['status']}`。",
+    version = config.raw["schema_version"]
+    lines = [f"# AutoKV-Skip v{version}.0 质量与容量报告", "", f"运行：`{directory.name}`；状态：`{result['status']}`。",
              f"流程完成：`{result['complete']}`；主实验达标：`{result['technical_goal_passed']}`。", "",
              f"质量判断采用预定点估计约束：总分下降不超过 {config.epsilons['all']}、每任务不超过 {config.raw['thresholds']['epsilon_task']}。",
              "置信区间未经同时覆盖校正；点估计达标不等于已经证明 1% 非劣性。", "",
@@ -104,15 +105,21 @@ def render_report(directory, config, result):
               "选择只使用 experiment；测试失败不会自动换层。P32 回退不是容量优化成功。", ""]
     if result.get("test_reused_from"):
         lines += [f"该测试的问题或证据已被其他运行使用：`{result['test_reused_from']}`。本次仅作重跑诊断，不计独立测试达标。", ""]
-    data_manifest = directory / "inputs" / DATA_ROOT / ("development" if result.get("development") else "quality") / "dataset-manifest.json"
+    if version == 4:
+        lines += [f"两批构造确认通过：`{result.get('construction_passed')}`；测试复现数据条件：`{result.get('data_conditions_reproduced')}`。",
+                  f"强恢复场景成立：`{result.get('recovery_demonstrated')}`；测试两端数据条件：`{result.get('test_data_conditions')}`。",
+                  "若新实验集的 P0 已满足最终容差，保留早停结论，不重新抽题或强制选择 BF16 层。", ""]
+    data_manifest = directory / "inputs" / config.data_root / ("development" if result.get("development") else "quality") / "dataset-manifest.json"
     if data_manifest.exists():
         data = read_json(data_manifest)
         lines += [f"数据题数：`{data['counts']}`；来源组数：`{data['source_groups']}`。",
                   f"来源划分：{data.get('source_allocation', '见数据清单')}。",
                   f"背景文档数：`{data.get('background_documents')}`；背景复用和原始来源见输入元数据。", ""]
+        if data.get("background_reuse"):
+            lines += [f"背景复用统计：`{data['background_reuse']}`。", ""]
     for split, summaries in result.get("scores", {}).items():
-        lines += [f"## {split} 分数", "", "| 配置 | 总分 | multi_key | multi_value | qa_single | qa_multi |",
-                  "|---|---:|---:|---:|---:|---:|"]
+        lines += [f"## {split} 分数", "", "| 配置 | 总分 | " + " | ".join(config.tasks) + " |",
+                  "|---|" + "---:|"*len(config.epsilons)]
         for name, scores in summaries.items():
             lines.append("| " + name + " | " + " | ".join(f"{scores[j]:.6f}" for j in config.epsilons) + " |")
         lines += ["", "| 配置 | 任务与长度 | 分数 |", "|---|---|---:|"]
@@ -135,18 +142,18 @@ def render_report(directory, config, result):
         lines.append(f"| {phase} | {row['requests']} | {row['retries']} | {row['server_starts']} | {row['seconds']:.3f} |")
     lines += ["", f"合计：`{result['cost']['total']}`。", f"样本与配置统计：`{result.get('coverage')}`。", "",
               f"存在未写完结束时间的启动记录：`{result['cost'].get('timing_incomplete', False)}`；若为 true，墙钟统计只是已记录的下界。", "",
-              "仅能解释本次预先确定的任务分布。有限束宽与早期淘汰不保证全局最优；1280 题不自动保证统计检验能力。",
+              "仅能解释本次预先确定的任务分布。有限束宽与早期淘汰不保证全局最优；固定题数不自动保证统计检验能力。",
               "未执行方法对照或吞吐实验时，不声称搜索优于其他算法或推理更快。", ""]
-    path = directory / "report/QUALITY-v3.zh-CN.md"
+    path = directory / f"report/QUALITY-v{version}.zh-CN.md"
     atomic_write_text(path, "\n".join(lines))
     return path
 
 
-def execute(config, splits, runner, directory, *, development=False):
+def execute(config, splits, runner, directory, *, development=False, finalize_result=None):
     completed = directory / "completed-manifest.json"
-    if completed.exists() and read_json(completed).get("complete"):
+    if completed.exists() and read_json(completed).get("complete") and read_json(completed).get("stage", "quality") == "quality":
         return read_json(completed)
-    result = {"schema_version": 3, "run_id": directory.name, "development": development,
+    result = {"schema_version": config.raw["schema_version"], "stage": "quality", "run_id": directory.name, "development": development,
               "complete": False, "quality_passed": False, "technical_goal_passed": False,
               "status": "running", "scores": {}, "candidate": None}
     p32, p0 = endpoint_policies(config.num_layers)
@@ -154,7 +161,7 @@ def execute(config, splits, runner, directory, *, development=False):
         if development:
             runner.phase = "development"
             rows = runner.evaluate(p32, "development", [r["sample_id"] for r in splits["development"]])
-            result.update(status="development_complete", complete=True, scores={"development": {"P32": aggregate(rows)}})
+            result.update(status="development_complete", complete=True, scores={"development": {"P32": aggregate(rows, config)}})
         else:
             selection_path = directory / "selection.json"
             if selection_path.exists():
@@ -174,19 +181,19 @@ def execute(config, splits, runner, directory, *, development=False):
                     raise ValueError("冻结的策略记录与运行不一致")
                 result["candidate"] = record
                 exp_rows = runner.evaluate(candidate, "experiment", [r["sample_id"] for r in splits["experiment"]])
-                result["scores"]["experiment"]["selected"] = aggregate(exp_rows)
+                result["scores"]["experiment"]["selected"] = aggregate(exp_rows, config)
                 reused = test_use(directory, splits["test"])
                 runner.phase = "test"
                 policies = {p.config_id: p for p in (p32, p0, candidate)}
                 tests = {pid: runner.evaluate(p, "test", [r["sample_id"] for r in splits["test"]]) for pid, p in policies.items()}
                 reference, chosen = tests[p32.config_id], tests[candidate.config_id]
                 names = [("P32", p32), ("P0", p0), ("selected", candidate)]
-                result["scores"]["test"] = {name: aggregate(tests[p.config_id]) for name, p in names}
+                result["scores"]["test"] = {name: aggregate(tests[p.config_id], config) for name, p in names}
                 comparisons = {name: comparison(reference, tests[p.config_id], config) for name, p in names[1:]}
                 result["comparisons"] = comparisons
                 interval_cache = {pid: paired_interval(reference, rows, config) for pid, rows in tests.items() if pid != p32.config_id}
                 result["intervals"] = {name: interval_cache[p.config_id] for name, p in names[1:]}
-                valid = reference_valid(reference)
+                valid = reference_valid(reference, config)
                 quality = valid and comparisons["selected"]["passed"]
                 capacity = measured_capacity(runner, p32, candidate, config.capacity_ratio)
                 passed = quality and capacity["status"] == "passed" and not reused
@@ -202,12 +209,16 @@ def execute(config, splits, runner, directory, *, development=False):
         result.update(cost=runner.statistics(), finished_at=utc_now())
         # 诊断不能因为尾行未写完而消失；统计与报告错误单独保留。
         try:
+            if finalize_result is not None:
+                finalize_result(result)
             result["coverage"] = coverage(directory, config)
             result["report"] = str(render_report(directory, config, result))
         except (ValueError, OSError, KeyError) as exc:
             result["report_error"] = str(exc)
             if result["complete"]:
                 result.update(complete=False, technical_goal_passed=False, status="runtime_failed")
+                if "recovery_demonstrated" in result:
+                    result["recovery_demonstrated"] = False
         atomic_write_json(completed, result)
         manifest_path = directory / "run-manifest.json"
         if manifest_path.exists():

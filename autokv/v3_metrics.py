@@ -31,22 +31,25 @@ def score_output(output, sample):
     raise ValueError(f"未知任务：{task}")
 
 
-def aggregate(rows):
+def aggregate(rows, config=None):
+    tasks = config.tasks if config is not None else TASKS
     cells = defaultdict(list)
     for row in rows:
         score = row["task_score"]
         if row.get("error") or not isinstance(score, (float, int)) or not math.isfinite(score) or not 0 <= score <= 1:
             raise ValueError("未完成请求或无效分数不能参与质量汇总")
         cells[(row["task"], row["length_bucket"])].append(score)
-    if set(t for t, _ in cells) != set(TASKS):
+    if set(t for t, _ in cells) != set(tasks):
         raise ValueError("质量评估缺少主任务")
     lengths = sorted({l for _, l in cells})
-    if len(lengths) != 4 or any((t, l) not in cells for t in TASKS for l in lengths):
+    expected_lengths = config.lengths if config is not None else lengths
+    if (config is None and len(lengths) != 4 or set(lengths) != set(expected_lengths)
+            or any((t, l) not in cells for t in tasks for l in lengths)):
         raise ValueError("质量评估缺少长度单元")
-    cell_means = {f"{t}:{l}": mean(cells[t, l]) for t in TASKS for l in lengths}
-    tasks = {t: mean(cell_means[f"{t}:{l}"] for l in lengths) for t in TASKS}
-    return {"all": mean(tasks.values()), **tasks, "cells": cell_means,
-            "lengths": {str(l): mean(cell_means[f"{t}:{l}"] for t in TASKS) for l in lengths},
+    cell_means = {f"{t}:{l}": mean(cells[t, l]) for t in tasks for l in lengths}
+    task_means = {t: mean(cell_means[f"{t}:{l}"] for l in lengths) for t in tasks}
+    return {"all": mean(task_means.values()), **task_means, "cells": cell_means,
+            "lengths": {str(l): mean(cell_means[f"{t}:{l}"] for t in tasks) for l in lengths},
             "count": len(rows)}
 
 
@@ -64,7 +67,7 @@ def align(reference, candidate):
 
 def comparison(reference, candidate, config):
     reference, candidate = align(reference, candidate)
-    return compare_summary(aggregate(reference), aggregate(candidate), config)
+    return compare_summary(aggregate(reference, config), aggregate(candidate, config), config)
 
 
 def compare_summary(ref, cand, config):
@@ -74,9 +77,9 @@ def compare_summary(ref, cand, config):
             "key": (max(violations), sum(violations), -cand["all"]), "scores": cand}
 
 
-def reference_valid(rows):
-    scores = aggregate(rows)
-    return all(scores[t] > 0 for t in TASKS)
+def reference_valid(rows, config=None):
+    scores = aggregate(rows, config)
+    return all(scores[t] > 0 for t in (config.tasks if config is not None else TASKS))
 
 
 def keys_equal(a, b):
@@ -102,9 +105,9 @@ def bootstrap_indices(rows, repeats, seed):
             for _ in range(repeats)]
 
 
-def resampled_summaries(rows, draws):
+def resampled_summaries(rows, draws, config=None):
     # 只重采样分数，不复制长提示和文本；同批 draws 可被所有候选复用。
-    return [aggregate([rows[i] for i in indices]) for indices in draws]
+    return [aggregate([rows[i] for i in indices], config) for indices in draws]
 
 
 def paired_interval(reference, candidate, config):
@@ -118,7 +121,7 @@ def paired_interval(reference, candidate, config):
         result["note"] = "至少一个单元只有一个独立来源组，区间不可可靠估计"
         return result
     values = {j: [] for j in config.epsilons}
-    for a, b in zip(resampled_summaries(reference, draws), resampled_summaries(candidate, draws)):
+    for a, b in zip(resampled_summaries(reference, draws, config), resampled_summaries(candidate, draws, config)):
         for j in values:
             values[j].append(a[j] - b[j])
     def percentile(values, p):

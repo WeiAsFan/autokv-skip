@@ -2367,12 +2367,24 @@ def build_parser() -> argparse.ArgumentParser:
     v3_run.add_argument("--port", type=int, default=8010)
     v3_run.add_argument("--development", action="store_true", help="仅用独立开发样本评估 BF16")
     v3_run.add_argument("--json", action="store_true")
+    v4_run = subparsers.add_parser("v4-run", help="v4 难度构造、两批确认与自动选层完整流程")
+    v4_run.add_argument("--project-root", default=str(REPOSITORY_ROOT))
+    v4_run.add_argument("--source-dir", help="本地离线来源目录；续跑默认复用保存路径")
+    v4_run.add_argument("--port", type=int, default=8010)
+    v4_run.add_argument("--run-id", help="接续同一运行，使用保存的配置")
+    v4_run.add_argument("--construction-only", action="store_true", help="只完成构造和规则冻结，可直接接续正式阶段")
+    v4_run.add_argument("--json", action="store_true")
     return parser
 
 
 def _dispatch(args: argparse.Namespace) -> Mapping[str, Any]:
     root = _resolved_root(args.project_root)
     command = args.command
+    if command == "v4-run":
+        from autokv.v4_pipeline import run_pipeline as run_v4
+
+        return run_v4(root, source_dir=args.source_dir, port=args.port, run_id=args.run_id,
+                      construction_only=args.construction_only)
     if command == "v3-make-data":
         from autokv.v3_data import make_data as make_v3_data
 
@@ -2433,7 +2445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         payload = _dispatch(args)
         _emit(payload, args.json)
-        if args.command == "v3-run" and payload.get("complete") is False:
+        if args.command in {"v3-run", "v4-run"} and payload.get("complete") is False:
             return EXIT_INCOMPLETE
         return 0
     except IncompleteDataError as exc:
@@ -2443,7 +2455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"server/http error: {exc}", file=sys.stderr)
         return EXIT_HTTP
     except (DoctorError, IndexError, KeyError, ValueError, TypeError) as exc:
-        label = "配置或数据错误" if args.command.startswith("v3-") else "invalid/gate error"
+        label = "配置或数据错误" if args.command.startswith(("v3-", "v4-")) else "invalid/gate error"
         print(f"{label}: {exc}", file=sys.stderr)
         return EXIT_INVALID
     except (FileNotFoundError, OSError, RuntimeError) as exc:

@@ -26,15 +26,15 @@ def promote(config, reference, rows_by_policy, policies, count, seed):
     chosen = {p.config_id for p in ordered[:count]}
     reasons = {p.config_id: {"reason": "base_rank"} for p in ordered[:count]}
     draws = bootstrap_indices(reference, config.bootstrap_samples, seed)
-    ref_draws = resampled_summaries(reference, draws) if draws is not None else None
-    boundary_draws = resampled_summaries(rows_by_policy[boundary.config_id], draws) if draws is not None else None
+    ref_draws = resampled_summaries(reference, draws, config) if draws is not None else None
+    boundary_draws = resampled_summaries(rows_by_policy[boundary.config_id], draws, config) if draws is not None else None
     for p in ordered[count:]:
         pid = p.config_id
         if keys_equal(summaries[pid]["key"], key) or draws is None:
             chosen.add(pid)
             reasons[pid] = {"reason": "point_tie" if draws is not None else "insufficient_groups"}
             continue
-        candidate_draws = resampled_summaries(rows_by_policy[pid], draws)
+        candidate_draws = resampled_summaries(rows_by_policy[pid], draws, config)
         wins = 0
         for a, b, c in zip(ref_draws, boundary_draws, candidate_draws):
             kb, kc = compare_summary(a, b, config)["key"], compare_summary(a, c, config)["key"]
@@ -64,9 +64,9 @@ def search(config, experiment, runner, trace_path):
 
     def result(status, candidate=None, **extra):
         return {"status": status, "candidate": candidate.record() if candidate else None,
-                "reference": aggregate(reference), "p0": aggregate(p0_rows), **extra}
+                "reference": aggregate(reference, config), "p0": aggregate(p0_rows, config), **extra}
 
-    if not reference_valid(reference):
+    if not reference_valid(reference, config):
         return result("reference_degenerate")
     if comparison(reference, p0_rows, config)["passed"]:
         log("selected_endpoint", policy=p0.record())
@@ -101,7 +101,7 @@ def search(config, experiment, runner, trace_path):
                     rows = runner.evaluate(p, "experiment", ids[:count])
                     rows_by_policy[p.config_id] = rows
                     comp = comparison(reference[:count], rows, config)
-                    gains = {parent.config_id: {j: comp["scores"][j]-aggregate(full_rows[parent.config_id][:count])[j]
+                    gains = {parent.config_id: {j: comp["scores"][j]-aggregate(full_rows[parent.config_id][:count], config)[j]
                                                 for j in config.epsilons} for parent in parents[p.config_id]}
                     log("evaluation", depth=depth, policy=p.record(), samples=count, comparison=comp,
                         parents=[parent.config_id for parent in parents[p.config_id]], marginal_gains=gains,

@@ -87,6 +87,13 @@ class TransformersPromptCodec:
         token_ids = self._tokenizer.encode(rendered, add_special_tokens=False)
         return str(rendered), len(token_ids)
 
+    def encode_text(self, text: str) -> list[int]:
+        """原始文本 token，用于新协议按 token 放置背景与测量证据位置。"""
+        return self._tokenizer.encode(text, add_special_tokens=False)
+
+    def decode_tokens(self, tokens: Sequence[int]) -> str:
+        return self._tokenizer.decode(tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+
 
 @dataclass(frozen=True)
 class FittedPrompt:

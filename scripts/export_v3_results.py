@@ -14,24 +14,29 @@ PART_BYTES = 20 * 1024 * 1024
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def export_results(root, run_id=None, *, part_bytes=PART_BYTES):
+def export_results(root, run_id=None, *, part_bytes=PART_BYTES, version=3):
     root = root.resolve()
-    if run_id is not None and not re.fullmatch(r"v3-[A-Za-z0-9_-]+", run_id):
-        raise ValueError("请输入 v3 运行 ID")
-    runs = sorted(p for p in (root / "runs").glob("v3-*") if p.is_dir())
+    if version not in (3, 4) or part_bytes <= 0:
+        raise ValueError("归档版本或分片大小无效")
+    prefix = f"v{version}"
+    if run_id is not None and not re.fullmatch(prefix+r"-[A-Za-z0-9_-]+", run_id):
+        raise ValueError(f"请输入 {prefix} 运行 ID")
+    runs = sorted(p for p in (root / "runs").glob(prefix+"-*") if p.is_dir())
     if run_id:
         runs = [p for p in runs if p.name == run_id]
         if not runs:
             raise ValueError(f"找不到运行 {run_id}")
-    logs = [p for p in (root / "runs").glob("v3-*") if p.is_file() and p.suffix in {".log", ".json", ".exitcode"}]
+    logs = [p for p in (root / "runs").glob(prefix+"-*") if p.is_file() and p.suffix in {".log", ".json", ".exitcode"}]
     if not runs and not logs:
-        raise ValueError("没有 v3 结果或 CLI 日志；按运行手册保存命令输出后再导出")
+        raise ValueError(f"没有 {prefix} 结果或 CLI 日志；按运行手册保存命令输出后再导出")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    output = root / "results" / f"v3-{stamp}"
+    output = root / "results" / f"{prefix}-{stamp}"
     output.mkdir(parents=True, exist_ok=False)
-    sources = [root / p for p in ("autokv", "scripts", "configs/v3.0", "docs/v3.0", "data/v3.0/README.md",
+    sources = [root / p for p in ("autokv", "scripts", f"configs/{prefix}.0", f"docs/{prefix}.0", f"data/{prefix}.0/README.md",
                                   "CONTEXT.md", "README.md", "pyproject.toml")]
-    if not runs:
+    if version == 4:
+        sources.append(root / "data/v3.0/README.md")
+    if not runs and version == 3:
         sources.extend(root / p for p in ("data/v3.0/development", "data/v3.0/quality"))
     files = set(logs)
     for path in [*sources, *runs]:
@@ -39,7 +44,7 @@ def export_results(root, run_id=None, *, part_bytes=PART_BYTES):
             files.add(path)
         elif path.is_dir():
             files.update(p for p in path.rglob("*") if p.is_file())
-    archive = output / "autokv-v3.tar.gz"
+    archive = output / f"autokv-{prefix}.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
         for path in sorted(files):
             relative = path.relative_to(root)
@@ -57,7 +62,7 @@ def export_results(root, run_id=None, *, part_bytes=PART_BYTES):
                 part.write_bytes(block)
                 names.append(part.name)
         archive.unlink()
-    lines = ["# AutoKV-Skip v3 运行归档", "", f"导出时间（UTC）：{stamp}", "",
+    lines = [f"# AutoKV-Skip {prefix} 运行归档", "", f"导出时间（UTC）：{stamp}", "",
              "包含原始回答、部分结果、每次服务日志、搜索轨迹、运行输入与 CLI 失败日志。",
              "`runs/<run_id>/inputs/` 为运行时实际输入；根目录源码是导出时副本。",
              "来源和许可说明位于 inputs 的 dataset-manifest.json；自定义提示与评分不是官方榜单协议。", "",
@@ -72,11 +77,11 @@ def export_results(root, run_id=None, *, part_bytes=PART_BYTES):
             shutil.copy2(report, output / f"{run.name}-{report.name}")
     if not runs:
         lines.append("| 尚未建立运行目录 | 仅 CLI 诊断 | false |")
-    lines += ["", "在 Linux 登录设备浏览器选择 GitHub 的 v3.0 分支，上传本目录文件并手动提交。服务器与 Linux 设备均不需要 git push。",
+    lines += ["", f"在 Linux 登录设备浏览器选择 GitHub 的 {prefix}.0 分支，上传本目录文件并手动提交。服务器与 Linux 设备均不需要 git push。",
               "", "## 解包", "", "```bash"]
     if len(names) > 1:
-        lines.append("cat autokv-v3.tar.gz.part-* > autokv-v3.tar.gz")
-    lines += ["tar -xzf autokv-v3.tar.gz", "```", ""]
+        lines.append(f"cat autokv-{prefix}.tar.gz.part-* > autokv-{prefix}.tar.gz")
+    lines += [f"tar -xzf autokv-{prefix}.tar.gz", "```", ""]
     atomic_write_text(output / "README.zh-CN.md", "\n".join(lines))
     return output
 

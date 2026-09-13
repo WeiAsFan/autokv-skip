@@ -25,7 +25,7 @@ def document_id(title):
     return "wiki:" + normalized(unquote(title).replace("_", " "))
 
 
-def load_sources(directory, config):
+def load_sources(directory, config, *, split_fractions=None):
     manifest = read_json(directory / "source-manifest.json")
     records = {r["name"]: r for r in manifest["sources"]}
     docs, questions, squad_docs, text_owner, parent = {}, [], set(), {}, {}
@@ -109,6 +109,14 @@ def load_sources(directory, config):
         keys = sorted(group)
         rng.shuffle(keys)
         n = len(keys)
+        if split_fractions is not None:
+            start = 0
+            for split, fraction in split_fractions[:-1]:
+                end = start + int(n*fraction)
+                assignment.update({key: split for key in keys[start:end]})
+                start = end
+            assignment.update({key: split_fractions[-1][0] for key in keys[start:]})
+            continue
         for i, key in enumerate(keys):
             assignment[key] = "development" if i < int(n*.10) else "experiment" if i < int(n*.28) else "test"
     return canonical_docs, unique, assignment, manifest
