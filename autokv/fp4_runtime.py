@@ -51,12 +51,12 @@ def _autokv_sm86():
                         kv_cache_for_fi,
                         q_scale=layer._q_scale_float,''', '''                        prefill_query,
                         kv_cache_for_fi,
-                        q_scale=layer._q_scale_float if prefill_query.dtype == FP8_DTYPE else 1.0,''')
+                        q_scale=layer._q_scale_float if prefill_query.dtype in (torch.float8_e4m3fn, torch.float8_e5m2) else 1.0,''')
     change('''                        decode_query,
                         kv_cache_for_fi,
                         q_scale=layer._q_scale_float,''', '''                        decode_query,
                         kv_cache_for_fi,
-                        q_scale=layer._q_scale_float if decode_query.dtype == FP8_DTYPE else 1.0,''', 2)
+                        q_scale=layer._q_scale_float if decode_query.dtype in (torch.float8_e4m3fn, torch.float8_e5m2) else 1.0,''', 2)
     change('''            if self.is_kvcache_nvfp4:
                 # (B, 2*H, N, full_dim)''', '''            if self.is_kvcache_nvfp4 and _autokv_sm86():
                 from autokv.fp4_cache import write_cache
