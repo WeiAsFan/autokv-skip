@@ -12,11 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autokv.benchmark import parse_capacity_tokens
-from autokv.client import VllmClient, VllmHttpError, wait_until_ready
+from autokv.client import VllmClient, wait_until_ready
 from autokv.commands import local_server_command
 from autokv.experiment import validate_server_log
 from autokv.io import append_jsonl, atomic_write_json, read_json, sha256_file
 from autokv.local_runtime import LocalVllmProcess
+from autokv.request_pool import evaluate_requests
 from autokv.v2_runtime import _chat_completion_text, v2_local_env, validate_prefix_caching_disabled
 from autokv.v3_config import identity
 from autokv.v3_metrics import score_output
@@ -113,6 +114,9 @@ class V3PolicyRunner:
         self.samples = {split: {r["sample_id"]: r for r in rows} for split, rows in samples.items()}
         self.port, self.client_factory, self.process_factory = port, client_factory, process_factory
         self.scorer = scorer
+        self.concurrency = config.raw["runtime"].get("request_concurrency", 1)
+        if type(self.concurrency) is not int or self.concurrency < 1:
+            raise ValueError("runtime.request_concurrency 必须为正整数")
         self.phase = "endpoints"
         self.context_id = identity({"config": config.raw, "environment": environment})
         self._cached = {}
@@ -178,7 +182,8 @@ class V3PolicyRunner:
             argv = (*argv, "--enforce-eager")
         attempt = {"phase": self.phase, "split": split, "policy": policy.record(), "sample_ids": sample_ids,
                    "missing_ids": [s["sample_id"] for s in missing], "started_at": utc_now(), "argv": list(argv),
-                   "requests": 0, "retries": 0, "server_starts": 0, "complete": False, "capacity_tokens": None}
+                   "requests": 0, "retries": 0, "server_starts": 0, "complete": False, "capacity_tokens": None,
+                   "request_concurrency": self.concurrency}
         atomic_write_json(attempt_path, attempt)
         process = None
         started = time.monotonic()
@@ -207,25 +212,19 @@ class V3PolicyRunner:
             validate_server_log(log, policy.variant, self.config.num_layers, require_capacity=False)
             validate_prefix_caching_disabled(log, argv)
             attempt["dtype_verified"] = True
-            for sample in missing:
-                request_started = time.monotonic()
-                retries = 0
-                for retry in range(2):
-                    self._check_budget()
-                    attempt["requests"] += 1
-                    attempt["seconds"] = time.monotonic()-started
-                    self._active["requests"] = attempt["requests"]
-                    atomic_write_json(attempt_path, attempt)
-                    try:
-                        response = client.chat_complete(sample["user_prompt"], sample["max_tokens"])
-                        break
-                    except (VllmHttpError, TimeoutError) as exc:
-                        append_jsonl(directory / "request-errors.jsonl", {"sample_id": sample["sample_id"],
-                                     "attempt": stem, "error": str(exc), "retry": retry, "timestamp": utc_now()})
-                        if retry or isinstance(exc, VllmHttpError) and exc.status is not None and exc.status < 500:
-                            raise
-                        retries += 1
-                        attempt["retries"] += 1
+            def on_send(retry):
+                self._check_budget()
+                attempt["requests"] += 1
+                attempt["retries"] += int(retry > 0)
+                attempt["seconds"] = time.monotonic()-started
+                self._active["requests"] = attempt["requests"]
+                atomic_write_json(attempt_path, attempt)
+
+            def on_error(sample, retry, exc):
+                append_jsonl(directory / "request-errors.jsonl", {"sample_id": sample["sample_id"],
+                             "attempt": stem, "error": str(exc), "retry": retry, "timestamp": utc_now()})
+
+            def on_response(sample, response, request_started, retries):
                 output = _chat_completion_text(response)
                 usage = response.get("usage", {})
                 if usage.get("prompt_tokens") != sample["prompt_tokens"]:
@@ -247,6 +246,7 @@ class V3PolicyRunner:
                 cached[row["sample_id"]] = row
                 if len(cached) % 16 == 0:
                     print(f"  已保存 {len(cached)} 条 {split} 回答", file=sys.stderr, flush=True)
+            evaluate_requests(missing, client, self.concurrency, on_send, on_error, on_response)
             attempt["complete"] = True
         except BaseException as exc:
             attempt["error"] = f"{type(exc).__name__}: {exc}"
