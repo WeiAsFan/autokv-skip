@@ -1,3 +1,5 @@
+> 当前 v4.1 FP4 实验请使用 [v4.1 运行手册](docs/v4.1/RUNBOOK.zh-CN.md)。下文保留为历史版本操作记录。
+
 # AutoKV-Skip A6000 独立运行手册
 
 当前 `v4.0` 已实现，请使用 [v4.0 离线运行手册](docs/v4.0/RUNBOOK.zh-CN.md)执行构造、自动选层、续跑和结果回传。设计依据见[设计文档](docs/v4.0/DESIGN.zh-CN.md)与[实现计划](docs/v4.0/IMPLEMENTATION-PLAN.zh-CN.md)。本历史手册中的联网、Git 提交和前置检查流程不适用于 v2/v3/v4。

@@ -17,7 +17,7 @@ class Variant:
     skip_layers: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.kv_dtype not in {"bfloat16", "fp8_e4m3"}:
+        if self.kv_dtype not in {"bfloat16", "fp8_e4m3", "nvfp4"}:
             raise ValueError(f"unsupported KV dtype: {self.kv_dtype}")
         if any(layer < 0 for layer in self.skip_layers):
             raise ValueError("skip layers must be non-negative")

@@ -13,8 +13,11 @@ class Policy:
     name: str
     bf16_layers: tuple[int, ...]
     num_layers: int = 32
+    kv_dtype: str = "fp8_e4m3"
 
     def __post_init__(self) -> None:
+        if self.kv_dtype not in {"fp8_e4m3", "nvfp4"}:
+            raise ValueError("未知的低精度 KV 格式")
         normalized = tuple(sorted(set(self.bf16_layers)))
         if normalized != self.bf16_layers:
             raise ValueError("BF16 层必须唯一并按升序排列")
@@ -30,10 +33,10 @@ class Policy:
     @property
     def variant(self) -> Variant:
         if self.k == 0:
-            return Variant.fp8()
+            return Variant("fp4" if self.kv_dtype == "nvfp4" else "fp8", self.kv_dtype)
         if self.k == self.num_layers:
             return Variant.bf16()
-        return Variant.mixed(self.name, self.bf16_layers)
+        return Variant(self.name, self.kv_dtype, self.bf16_layers)
 
     @property
     def config_id(self) -> str:
@@ -45,7 +48,7 @@ class Policy:
             "config_id": self.config_id,
             "k": self.k,
             "bf16_layers": list(self.bf16_layers),
-            "fp8_layers": [
+            ("fp4_layers" if self.kv_dtype == "nvfp4" else "fp8_layers"): [
                 layer
                 for layer in range(self.num_layers)
                 if layer not in self.bf16_layers
@@ -53,10 +56,10 @@ class Policy:
         }
 
 
-def endpoint_policies(num_layers: int = 32) -> tuple[Policy, Policy]:
+def endpoint_policies(num_layers: int = 32, kv_dtype: str = "fp8_e4m3") -> tuple[Policy, Policy]:
     return (
-        Policy("p32", tuple(range(num_layers)), num_layers),
-        Policy("p0", (), num_layers),
+        Policy("p32", tuple(range(num_layers)), num_layers, kv_dtype),
+        Policy("p0", (), num_layers, kv_dtype),
     )
 
 
@@ -128,10 +131,12 @@ def theoretical_capacity(
     policy: Policy, *, num_kv_heads: int = 8, head_dim: int = 128
 ) -> dict[str, float | int]:
     bf16_bytes = 2
-    fp8_bytes = 1
+    if policy.kv_dtype == "nvfp4" and head_dim % 16:
+        raise ValueError("FP4 KV 的 head_dim 必须是 16 的倍数")
+    low_bytes = 9 / 16 if policy.kv_dtype == "nvfp4" else 1
     per_layer_elements = 2 * num_kv_heads * head_dim
     bytes_per_token = per_layer_elements * (
-        policy.k * bf16_bytes + (policy.num_layers - policy.k) * fp8_bytes
+        policy.k * bf16_bytes + (policy.num_layers - policy.k) * low_bytes
     )
     bf16_total = per_layer_elements * policy.num_layers * bf16_bytes
     return {

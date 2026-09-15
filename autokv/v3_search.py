@@ -11,9 +11,9 @@ from autokv.v3_metrics import (aggregate, bootstrap_indices, compare_summary, co
 from autokv.v3_runtime import SearchBudgetExceeded, utc_now
 
 
-def policy_for(layers, num_layers):
+def policy_for(layers, num_layers, kv_dtype="fp8_e4m3"):
     layers = tuple(sorted(layers))
-    return Policy(f"p{len(layers)}-" + ("-".join(map(str, layers)) or "empty"), layers, num_layers)
+    return Policy(f"p{len(layers)}-" + ("-".join(map(str, layers)) or "empty"), layers, num_layers, kv_dtype)
 
 
 def promote(config, reference, rows_by_policy, policies, count, seed):
@@ -53,7 +53,7 @@ def search(config, experiment, runner, trace_path):
     ids = [r["sample_id"] for r in experiment]
     if len(ids) != config.experiment_size:
         raise ValueError("实验集不完整")
-    p32, p0 = endpoint_policies(config.num_layers)
+    p32, p0 = endpoint_policies(config.num_layers, config.low_kv_dtype)
     runner.phase = "endpoints"
     reference = runner.evaluate(p32, "experiment", ids)
     p0_rows = runner.evaluate(p0, "experiment", ids)
@@ -82,7 +82,7 @@ def search(config, experiment, runner, trace_path):
                 for layer in range(config.num_layers):
                     if layer in parent.bf16_layers:
                         continue
-                    policy = policy_for((*parent.bf16_layers, layer), config.num_layers)
+                    policy = policy_for((*parent.bf16_layers, layer), config.num_layers, config.low_kv_dtype)
                     candidates[policy.config_id] = policy
                     parents.setdefault(policy.config_id, []).append(parent)
             active = sorted(candidates.values(), key=lambda p: p.bf16_layers)
@@ -126,7 +126,7 @@ def search(config, experiment, runner, trace_path):
         if selected is None:
             return result("no_feasible_within_budget", reason="达到容量允许的层数或预设层数上限")
         while selected.k:
-            deletions = [policy_for(set(selected.bf16_layers)-{layer}, config.num_layers) for layer in selected.bf16_layers]
+            deletions = [policy_for(set(selected.bf16_layers)-{layer}, config.num_layers, config.low_kv_dtype) for layer in selected.bf16_layers]
             random.Random(config.seed+3+sum(selected.bf16_layers)).shuffle(deletions)
             removable = []
             for p in deletions:

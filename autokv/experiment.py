@@ -282,7 +282,9 @@ def validate_server_log(
     fp8_message = "USING FP8_E4M3 DATA TYPE TO STORE KV CACHE"
     if variant.kv_dtype == "fp8_e4m3" and fp8_message not in upper:
         raise ValueError("server log does not confirm exact FP8 E4M3 KV cache")
-    if variant.kv_dtype == "bfloat16" and fp8_message in upper:
+    if variant.kv_dtype == "nvfp4" and "USING NVFP4 DATA TYPE TO STORE KV CACHE" not in upper:
+        raise ValueError("服务日志未确认实际使用 NVFP4 KV")
+    if variant.kv_dtype == "bfloat16" and (fp8_message in upper or "USING NVFP4 DATA TYPE TO STORE KV CACHE" in upper):
         raise ValueError("BF16 server log unexpectedly confirms FP8 E4M3 KV cache")
     if variant.kv_dtype == "bfloat16" and not re.search(
         r"\bKV_CACHE_DTYPE\s*=\s*['\"]?BFLOAT16\b['\"]?", upper
@@ -309,7 +311,7 @@ def validate_server_log(
         )
     skipped = set(variant.skip_layers)
     for layer in range(num_layers):
-        expected = "auto" if layer in skipped else "fp8_e4m3"
+        expected = "auto" if layer in skipped else variant.kv_dtype
         if observed[layer] != expected:
             raise ValueError(
                 f"layer {layer} effective KV dtype is {observed[layer]}, expected {expected}"

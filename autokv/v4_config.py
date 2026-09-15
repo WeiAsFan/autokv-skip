@@ -29,7 +29,7 @@ class V4Config(V3Config):
         raw = json.loads(json.dumps(raw, allow_nan=False))
         if raw.get("schema_version") != 4 or raw["scoring"]["version"] != SCORE_VERSION:
             raise ValueError("不支持的 v4 配置或评分版本")
-        obj = cls(raw)
+        obj = cls(raw, data_directory="data/v4.1" if raw.get("experiment_version") == "4.1" else "data/v4.0")
         c, d, s = raw["construction"], raw["data"], raw["search"]
         if not c["tasks"] or len(set(c["tasks"])) != len(c["tasks"]) or not set(c["tasks"]) <= set(TASKS):
             raise ValueError("构造任务必须是明确且不重复的 v4 任务")
@@ -45,8 +45,8 @@ class V4Config(V3Config):
             raise ValueError("模型维度、样本数和计算次数必须是正整数")
         if c["confirmation_batches"] != 2 or type(c["max_confirmation_conditions"]) is not int or not 1 <= c["max_confirmation_conditions"] <= 2:
             raise ValueError("v4 使用两批新确认样本，最多确认两个条件")
-        if not 0 < c["min_bf16_score"] <= 1 or not 0.10 <= c["min_fp8_gap"] < 1:
-            raise ValueError("BF16 目标应处于 (0,1]；FP8 恢复需求至少为 0.10 且小于 1")
+        if not 0 < c["min_bf16_score"] <= 1 or not 0.10 <= c["min_"+obj.low_precision+"_gap"] < 1:
+            raise ValueError("BF16 目标应处于 (0,1]；低精度恢复需求至少为 0.10 且小于 1")
         if type(obj.tolerance) is not int or obj.tolerance < 0 or max(obj.lengths)+obj.tolerance+obj.max_tokens > raw["model"]["max_model_len"]:
             raise ValueError("实际输入与输出空间超过模型长度上限")
         if (len(obj.fidelities) != 3 or any(type(n) is not int or n <= 0 for n in obj.fidelities)
@@ -54,7 +54,7 @@ class V4Config(V3Config):
             raise ValueError("需要三个递增前缀，末级等于完整实验集")
         if s["schedule"] not in {"progressive", "full"} or not 0 < s["promotion_win_fraction"] <= 1:
             raise ValueError("搜索调度或晋级比例无效")
-        if not 1 < obj.capacity_ratio <= 2 or any(not 0 < v <= 1 for v in obj.epsilons.values()):
+        if not 1 < obj.capacity_ratio <= (32/9 if obj.low_kv_dtype == "nvfp4" else 2) or any(not 0 < v <= 1 for v in obj.epsilons.values()):
             raise ValueError("质量容差或容量目标无效")
         for key in ("max_requests", "max_seconds", "max_bf16_layers"):
             value = s.get(key)
@@ -66,8 +66,10 @@ class V4Config(V3Config):
             raise ValueError("需要来源名称与整数种子")
         runtime = raw["runtime"]
         if (runtime["enable_prefix_caching"] is not False or runtime["calculate_kv_scales"] is not False
-                or runtime["attention_backend"] != "FLASHINFER" or runtime["kv_cache_dtype"] != "fp8_e4m3" or runtime["seed"] != 42):
-            raise ValueError("v4 沿用 FLASHINFER、固定 scale 的 FP8 E4M3、关闭 prefix caching 和 seed=42")
+                or runtime["attention_backend"] != "FLASHINFER" or runtime["kv_cache_dtype"] != ("nvfp4" if obj.experiment_version == "4.1" else "fp8_e4m3") or runtime["seed"] != 42):
+            raise ValueError("v4 使用指定低精度、FLASHINFER、关闭首次全局 scale 估计与 prefix caching、seed=42")
+        if obj.low_kv_dtype == "nvfp4" and (raw["model"]["head_dim"] % 16 or not runtime.get("enforce_eager")):
+            raise ValueError("v4.1 FP4 要求 head_dim 为 16 的倍数，并使用 eager 执行")
         return obj
 
     @property
@@ -97,5 +99,5 @@ class V4Config(V3Config):
         return replace(self, selected_condition=dict(chosen), data_directory=data_directory or self.data_directory)
 
 
-def load_config(root):
-    return V4Config.from_dict(read_json(Path(root) / CONFIG_PATH))
+def load_config(root, config_path=CONFIG_PATH):
+    return V4Config.from_dict(read_json(Path(root) / config_path))

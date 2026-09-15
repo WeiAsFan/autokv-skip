@@ -174,6 +174,8 @@ class V3PolicyRunner:
         argv = local_server_command(self.config.profile(), self.environment["vllm"], policy.variant,
                                     self.root, self.port, self.config.model_revision,
                                     model_path=Path(self.environment["model_path"]))
+        if self.config.raw["runtime"].get("enforce_eager"):
+            argv = (*argv, "--enforce-eager")
         attempt = {"phase": self.phase, "split": split, "policy": policy.record(), "sample_ids": sample_ids,
                    "missing_ids": [s["sample_id"] for s in missing], "started_at": utc_now(), "argv": list(argv),
                    "requests": 0, "retries": 0, "server_starts": 0, "complete": False, "capacity_tokens": None}
@@ -186,7 +188,17 @@ class V3PolicyRunner:
                 if sys.platform.startswith("linux"):
                     probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("0.0.0.0", self.port))
-            process = self.process_factory(argv, log_path, cwd=self.root, env=v2_local_env(self.environment))
+            process_env = v2_local_env(self.environment)
+            if self.config.low_kv_dtype == "nvfp4":
+                site = os.environ.get("AUTOKV_FP4_SITE", str(self.root / ".runtime/v41/site"))
+                process_env.update(PYTHONPATH=os.pathsep.join((site, str(self.root), process_env.get("PYTHONPATH", ""))),
+                                   AUTOKV_FP4_SITE=site,
+                                   VLLM_KV_CACHE_LAYOUT="HND", VLLM_USE_TRTLLM_ATTENTION="0",
+                                   FLASHINFER_CUDA_ARCH_LIST="8.6",
+                                   FLASHINFER_CUBIN_DIR=str(self.root / ".runtime/v41/cubins"),
+                                   FLASHINFER_WORKSPACE_BASE=str(self.root / ".runtime/v41/flashinfer-cache"),
+                                   TORCH_EXTENSIONS_DIR=str(self.root / ".runtime/v41/torch-extensions"))
+            process = self.process_factory(argv, log_path, cwd=self.root, env=process_env)
             attempt["server_starts"] = 1
             atomic_write_json(attempt_path, attempt)
             client = self.client_factory(f"http://127.0.0.1:{self.port}", self.config.model_id)

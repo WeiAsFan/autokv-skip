@@ -105,8 +105,15 @@ class V3Config:
         return {"all": self.raw["thresholds"]["epsilon_global"],
                 **{t: self.raw["thresholds"]["epsilon_task"] for t in self.tasks}}
     @property
+    def low_kv_dtype(self): return self.raw["runtime"]["kv_cache_dtype"]
+    @property
+    def low_precision(self): return "fp4" if self.low_kv_dtype == "nvfp4" else "fp8"
+    @property
+    def experiment_version(self): return self.raw.get("experiment_version", str(self.raw["schema_version"])+".0")
+    @property
     def max_layers(self):
-        limit = math.floor(2 * self.num_layers / self.capacity_ratio - self.num_layers + 1e-12)
+        low_bytes = 9 / 16 if self.low_kv_dtype == "nvfp4" else 1
+        limit = math.floor((2 * self.num_layers / self.capacity_ratio - self.num_layers * low_bytes) / (2 - low_bytes) + 1e-12)
         requested = self.raw["search"].get("max_bf16_layers")
         return min(limit, requested if requested is not None else limit)
 

@@ -36,16 +36,17 @@ def register(runner, split, rows, config):
 
 def render_construction(directory, config, result, cost):
     limits = config.raw["construction"]
-    lines = ["# AutoKV-Skip v4.0 数据构造报告", "", f"运行：`{directory.name}`；状态：`{result['status']}`。",
+    low = config.low_precision
+    lines = [f"# AutoKV-Skip v{config.experiment_version} 数据构造报告", "", f"运行：`{directory.name}`；状态：`{result['status']}`。",
              f"构造阶段完成：`{result['complete']}`；两批确认通过：`{result['construction_passed']}`。", "",
-             f"每批独立要求 BF16 正确率 ≥ {limits['min_bf16_score']}，P32−P0 严格 > {limits['min_fp8_gap']}（绝对分差）。",
+             f"每批独立要求 BF16 正确率 ≥ {limits['min_bf16_score']}，P32−P0 严格 > {limits['min_'+low+'_gap']}（绝对分差）。",
              "错误答案保留在完整分母内；通信失败表示未完成。没有按单题模型对错筛选数据。",
              "确认通过后才冻结一个生成条件；正式数据全部重新生成。", "",
-             "| 条件 | 状态 | 发现题数 | BF16 | FP8 | 分差 |",
+             f"| 条件 | 状态 | 发现题数 | BF16 | {low.upper()} | 分差 |",
              "|---|---|---:|---:|---:|---:|"]
     for row in result.get("conditions", []):
         summary = row.get("discovery")
-        values = " | ".join(f"{summary[k]:.4f}" for k in ("bf16_score", "fp8_score", "gap")) if summary else "— | — | —"
+        values = " | ".join(f"{summary[k]:.4f}" for k in ("bf16_score", low+"_score", "gap")) if summary else "— | — | —"
         lines.append(f"| {row['condition']['condition_id']} | {row['status']} | {summary['count'] if summary else '—'} | {values} |")
     for row in result.get("conditions", []):
         name = row["condition"]["condition_id"]
@@ -55,16 +56,16 @@ def render_construction(directory, config, result, cost):
                                ("确认合并（仅供描述，不代替逐批判据）", row.get("confirmation_combined"))]:
             if summary:
                 lines += ["", f"## {name}：{label}", "",
-                          f"题数 {summary['count']}；BF16 {summary['bf16_score']:.6f}；FP8 {summary['fp8_score']:.6f}；分差 {summary['gap']:.6f}。",
+                          f"题数 {summary['count']}；BF16 {summary['bf16_score']:.6f}；{low.upper()} {summary[low+'_score']:.6f}；分差 {summary['gap']:.6f}。",
                           f"BF16 95% Wilson 区间：`{summary['bf16_interval95']}`；配对分差区间：`{summary['gap_interval95']}`（`{summary['gap_interval_status']}`）。",
-                          f"BF16 可解：`{summary['bf16_solvable']}`；FP8 恢复需求：`{summary['fp8_recovery_needed']}`；两项合并：`{summary['passed']}`。",
-                          f"BF16 错误/格式/截断：`{summary['bf16_errors']}`；FP8：`{summary['fp8_errors']}`。"]
+                          f"BF16 可解：`{summary['bf16_solvable']}`；{low.upper()} 恢复需求：`{summary[low+'_recovery_needed']}`；两项合并：`{summary['passed']}`。",
+                          f"BF16 错误/格式/截断：`{summary['bf16_errors']}`；{low.upper()}：`{summary[low+'_errors']}`。"]
     if result.get("selected_rule"):
         lines += ["", "## 冻结规则", "", f"条件：`{result['selected_rule']['condition']}`。",
                   "完整词表、模板、位置规则、种子、来源与两批确认统计见 `construction/selected-rule.json`。"]
     else:
         lines += ["", "当前有限范围与预算内未确认满足条件的数据；未完成时只能等待续跑，不能解释为负结论。",
-                  "完整扫描仍未找到时，可据各条件的 BF16 可解性与分差另立更低位宽方案；本轮不自动改用 FP4。"]
+                  "完整扫描仍未找到时，应保留负结果；本轮不自动改变数据分布或精度。"]
     if result.get("error"):
         lines += ["", "```text", result["error"], "```"]
     lines += ["", "## 成本与解释边界", "", f"实际累计开销（含正式阶段，如已运行）：`{cost}`。",
@@ -86,8 +87,9 @@ def construct(config, directory, codec, get_sources, runner, source_info, progre
         return result
     result = {"schema_version": 4, "status": "constructing", "complete": False,
               "construction_passed": False, "conditions": [], "selected_rule": None}
-    p32, p0 = endpoint_policies(config.num_layers)
+    p32, p0 = endpoint_policies(config.num_layers, config.low_kv_dtype)
     limits = config.raw["construction"]
+    low = config.low_precision
 
     def save():
         atomic_write_text(folder / "conditions.jsonl", "".join(json.dumps(r, ensure_ascii=False, sort_keys=True)+"\n" for r in result["conditions"]))

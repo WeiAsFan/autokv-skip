@@ -42,7 +42,7 @@ def prepare_run(root, config, environment, codec, source_dir, source_info, *, ru
     code = actual_code()
     inputs_id = identity({"config": config.raw, "sources": source_info.get("files", source_info), "runtime": environment,
                           "code": code, "template": codec.template_text})
-    directory = root / "runs" / (run_id or "v4-"+inputs_id[:16])
+    directory = root / "runs" / (run_id or ("v41-" if config.experiment_version == "4.1" else "v4-")+inputs_id[:16])
     path = directory / "run-manifest.json"
     if path.exists():
         if read_json(path)["inputs_id"] != inputs_id:
@@ -53,17 +53,26 @@ def prepare_run(root, config, environment, codec, source_dir, source_info, *, ru
     inputs = directory / "inputs"
     for relative, content in code.items():
         atomic_write_text(inputs / relative, content)
-    for relative in ("scripts", "docs/v4.0"):
+    for relative in ("scripts", f"docs/v{config.experiment_version}"):
         if (root / relative).exists():
             shutil.copytree(root / relative, inputs / relative, dirs_exist_ok=True,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for relative in ("pyproject.toml", "CONTEXT.md", "README.md", "data/v4.0/README.md", "data/v3.0/README.md"):
+    for relative in ("pyproject.toml", "CONTEXT.md", "README.md", f"data/v{config.experiment_version}/README.md", "data/v3.0/README.md"):
         if (root / relative).exists():
             destination = inputs / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / relative, destination)
-    atomic_write_json(inputs / CONFIG_PATH, config.raw)
+    atomic_write_json(inputs / f"configs/v{config.experiment_version}/quality.json", config.raw)
     atomic_write_json(inputs / "runtime.json", environment)
+    if config.low_kv_dtype == "nvfp4":
+        import os
+        site = Path(os.environ.get("AUTOKV_FP4_SITE", root / ".runtime/v41/site"))
+        for relative in ("vllm-fp4.patch", "flashinfer/jit/env.py", "flashinfer/_build_meta.py"):
+            source = site / relative
+            if source.is_file():
+                destination = inputs / "runtime-overlay" / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
     atomic_write_json(inputs / "source-manifest.json", source_info)
     atomic_write_json(inputs / "generator-rules.json", GENERATOR_RULES)
     atomic_write_text(inputs / "chat-template.txt", codec.template_text)
@@ -81,10 +90,10 @@ def finish_flags(result, construction, config, runner):
                   recovery_demonstrated=False, test_data_conditions=None)
     if "test" not in result.get("scores", {}):
         return
-    p32, p0 = endpoint_policies(config.num_layers)
+    p32, p0 = endpoint_policies(config.num_layers, config.low_kv_dtype)
     reference = list(runner.cached(p32, "test").values())
-    fp8 = list(runner.cached(p0, "test").values())
-    summary = paired_summary(reference, fp8, config)
+    low_precision = list(runner.cached(p0, "test").values())
+    summary = paired_summary(reference, low_precision, config)
     result.update(test_data_conditions=summary, data_conditions_reproduced=summary["passed"])
     candidate = result.get("candidate")
     mixed = candidate is not None and 0 < len(candidate["bf16_layers"]) < config.num_layers
@@ -118,7 +127,7 @@ def execute_v4(config, root, directory, codec, get_sources, runner, source_info,
             return result
         result.update(stage="data", complete=False, status="generating_formal_data")
         chosen = construction["selected_rule"]["condition"]
-        config = config.for_condition(chosen, data_directory=f"data/v4.0/{directory.name}")
+        config = config.for_condition(chosen, data_directory=f"data/v{config.experiment_version}/{directory.name}")
         runner.config = config
         data_dir = directory / "inputs" / config.data_root / "quality"
         splits = {}
@@ -170,12 +179,12 @@ def execute_v4(config, root, directory, codec, get_sources, runner, source_info,
                     atomic_write_json(path, manifest)
 
 
-def run_pipeline(root, *, source_dir=None, port=8010, run_id=None, construction_only=False):
+def run_pipeline(root, *, source_dir=None, port=8010, run_id=None, construction_only=False, config_path=CONFIG_PATH):
     root = Path(root).resolve()
-    if run_id is not None and not re.fullmatch(r"v4-[A-Za-z0-9_-]+", run_id):
+    if run_id is not None and not re.fullmatch(r"v4(?:1)?-[A-Za-z0-9_-]+", run_id):
         raise ValueError("请输入 v4 运行 ID")
     saved = read_json(root / "runs" / run_id / "run-manifest.json") if run_id else None
-    config = V4Config.from_dict(saved["config"]) if saved else load_config(root)
+    config = V4Config.from_dict(saved["config"]) if saved else load_config(root, config_path)
     if not sys.platform.startswith("linux"):
         raise ValueError("真实 v4 GPU 实验请在 Linux 服务器执行；本地模拟不能替代 GPU 结果")
     environment = load_environment(root, config, observe_runtime=True)

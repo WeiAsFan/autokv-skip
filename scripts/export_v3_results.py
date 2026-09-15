@@ -16,9 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def export_results(root, run_id=None, *, part_bytes=PART_BYTES, version=3):
     root = root.resolve()
-    if version not in (3, 4) or part_bytes <= 0:
+    if version not in (3, 4, "4.1") or part_bytes <= 0:
         raise ValueError("归档版本或分片大小无效")
-    prefix = f"v{version}"
+    prefix = "v41" if version == "4.1" else f"v{version}"
+    release = "v4.1" if version == "4.1" else prefix+".0"
     if run_id is not None and not re.fullmatch(prefix+r"-[A-Za-z0-9_-]+", run_id):
         raise ValueError(f"请输入 {prefix} 运行 ID")
     runs = sorted(p for p in (root / "runs").glob(prefix+"-*") if p.is_dir())
@@ -32,9 +33,9 @@ def export_results(root, run_id=None, *, part_bytes=PART_BYTES, version=3):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     output = root / "results" / f"{prefix}-{stamp}"
     output.mkdir(parents=True, exist_ok=False)
-    sources = [root / p for p in ("autokv", "scripts", f"configs/{prefix}.0", f"docs/{prefix}.0", f"data/{prefix}.0/README.md",
+    sources = [root / p for p in ("autokv", "scripts", f"configs/{release}", f"docs/{release}", f"data/{release}/README.md",
                                   "CONTEXT.md", "README.md", "pyproject.toml")]
-    if version == 4:
+    if version in (4, "4.1"):
         sources.append(root / "data/v3.0/README.md")
     if not runs and version == 3:
         sources.extend(root / p for p in ("data/v3.0/development", "data/v3.0/quality"))
@@ -77,7 +78,7 @@ def export_results(root, run_id=None, *, part_bytes=PART_BYTES, version=3):
             shutil.copy2(report, output / f"{run.name}-{report.name}")
     if not runs:
         lines.append("| 尚未建立运行目录 | 仅 CLI 诊断 | false |")
-    lines += ["", f"在 Linux 登录设备浏览器选择 GitHub 的 {prefix}.0 分支，上传本目录文件并手动提交。服务器与 Linux 设备均不需要 git push。",
+    lines += ["", f"在 Linux 登录设备浏览器选择 GitHub 的 {release} 分支，上传本目录文件并手动提交。服务器与 Linux 设备均不需要 git push。",
               "", "## 解包", "", "```bash"]
     if len(names) > 1:
         lines.append(f"cat autokv-{prefix}.tar.gz.part-* > autokv-{prefix}.tar.gz")

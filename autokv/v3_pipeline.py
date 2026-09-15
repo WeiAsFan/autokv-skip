@@ -61,7 +61,7 @@ def test_use(directory, rows):
     current = {"questions": sorted({r["source_question_id"] for r in rows}),
                "evidence": sorted({d for r in rows for d in r["evidence_document_ids"]})}
     reused = []
-    for path in sorted([*directory.parent.glob("v3-*/test-use.json"), *directory.parent.glob("v4-*/test-use.json")]):
+    for path in sorted([*directory.parent.glob("v3-*/test-use.json"), *directory.parent.glob("v4-*/test-use.json"), *directory.parent.glob("v41-*/test-use.json")]):
         if path.parent == directory or not any(p.stat().st_size for p in path.parent.glob("policies/*/test.jsonl")):
             continue
         prior = read_json(path)
@@ -92,12 +92,12 @@ def coverage(directory, config):
 
 def render_report(directory, config, result):
     version = config.raw["schema_version"]
-    lines = [f"# AutoKV-Skip v{version}.0 质量与容量报告", "", f"运行：`{directory.name}`；状态：`{result['status']}`。",
+    lines = [f"# AutoKV-Skip v{config.experiment_version} 质量与容量报告", "", f"运行：`{directory.name}`；状态：`{result['status']}`。",
              f"流程完成：`{result['complete']}`；主实验达标：`{result['technical_goal_passed']}`。", "",
              f"质量判断采用预定点估计约束：总分下降不超过 {config.epsilons['all']}、每任务不超过 {config.raw['thresholds']['epsilon_task']}。",
              "置信区间未经同时覆盖校正；点估计达标不等于已经证明 1% 非劣性。", "",
              f"实际容差：`{config.epsilons}`；容量目标：`{config.capacity_ratio}×`。",
-             "FP8 scale：固定 1.0，未作数据校准；prefix caching 关闭。", ""]
+             ("FP4 E2M1：每 16 个数动态 E4M3 scale，全局因子 1；BF16 Q/O；prefix caching 关闭。" if config.low_kv_dtype == "nvfp4" else "FP8 scale：固定 1.0，未作数据校准；prefix caching 关闭。"), ""]
     if result.get("error"):
         lines += ["运行错误：", "", "```text", result["error"], "```", ""]
     candidate = result.get("candidate")
@@ -134,7 +134,7 @@ def render_report(directory, config, result):
             lines.append(f"| {j} | {gap:.6f} | {bounds} |")
         lines += ["", interval["note"], ""]
     if candidate:
-        p = Policy(candidate["name"], tuple(candidate["bf16_layers"]), config.num_layers)
+        p = Policy(candidate["name"], tuple(candidate["bf16_layers"]), config.num_layers, config.low_kv_dtype)
         theory = theoretical_capacity(p, num_kv_heads=config.raw["model"]["num_kv_heads"], head_dim=config.raw["model"]["head_dim"])
         lines += ["## 容量", "", f"候选理论容量：`{theory}`。", f"测试实测：`{result.get('capacity')}`。", ""]
     lines += ["## 计算开销", "", "| 阶段 | 请求 | 重试 | 服务启动 | 墙钟秒 |", "|---|---:|---:|---:|---:|"]
@@ -156,7 +156,7 @@ def execute(config, splits, runner, directory, *, development=False, finalize_re
     result = {"schema_version": config.raw["schema_version"], "stage": "quality", "run_id": directory.name, "development": development,
               "complete": False, "quality_passed": False, "technical_goal_passed": False,
               "status": "running", "scores": {}, "candidate": None}
-    p32, p0 = endpoint_policies(config.num_layers)
+    p32, p0 = endpoint_policies(config.num_layers, config.low_kv_dtype)
     try:
         if development:
             runner.phase = "development"
@@ -176,7 +176,7 @@ def execute(config, splits, runner, directory, *, development=False, finalize_re
             if record is None:
                 result.update(status=selection["status"], complete=True)
             else:
-                candidate = Policy(record["name"], tuple(record["bf16_layers"]), config.num_layers)
+                candidate = Policy(record["name"], tuple(record["bf16_layers"]), config.num_layers, config.low_kv_dtype)
                 if candidate.config_id != record["config_id"] or selection["run_id"] != directory.name:
                     raise ValueError("冻结的策略记录与运行不一致")
                 result["candidate"] = record

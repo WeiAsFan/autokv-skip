@@ -60,13 +60,14 @@ def paired_summary(reference, candidate, config):
                 return values[lo]+(values[min(lo+1, len(values)-1)]-values[lo])*(index-lo)
             interval, status = [percentile(.025), percentile(.975)], "estimated"
     limits = config.raw["construction"]
+    low = config.low_precision
     bf16_ok = Fraction(int(a), n) >= Fraction(str(limits["min_bf16_score"]))
-    gap_ok = Fraction(int(a-b), n) > Fraction(str(limits["min_fp8_gap"]))
-    return {"count": n, "bf16_successes": int(a), "fp8_successes": int(b),
-            "bf16_score": a/n, "fp8_score": b/n, "gap": (a-b)/n,
+    gap_ok = Fraction(int(a-b), n) > Fraction(str(limits["min_"+low+"_gap"]))
+    return {"count": n, "bf16_successes": int(a), low+"_successes": int(b),
+            "bf16_score": a/n, low+"_score": b/n, "gap": (a-b)/n,
             "bf16_interval95": wilson(a, n), "gap_interval95": interval, "gap_interval_status": status,
-            "bf16_solvable": bf16_ok, "fp8_recovery_needed": gap_ok, "passed": bf16_ok and gap_ok,
-            "bf16_errors": diagnostics(reference), "fp8_errors": diagnostics(candidate),
+            "bf16_solvable": bf16_ok, low+"_recovery_needed": gap_ok, "passed": bf16_ok and gap_ok,
+            "bf16_errors": diagnostics(reference), low+"_errors": diagnostics(candidate),
             "note": "点判据与区间分开；退化区间不能解释为总体误差为零，区间未经同时覆盖校正"}
 
 
