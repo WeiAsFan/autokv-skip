@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+import sysconfig
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,7 +72,8 @@ def load_environment(root, config, *, observe_runtime=False):
                                   for name in ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json")
                                   if (Path(env["model_path"]) / name).is_file()}
     return {key: env[key] for key in ("backend", "vllm", "python", "model_path", "model_revision", "model_id",
-            "ld_library_path", "cuda_home", "nvcc", "flashinfer_workspace_base", "torch_extensions_dir",
+            "ld_library_path", "cuda_home", "nvcc", "flashinfer_cubin_dir", "flashinfer_workspace_base",
+            "torch_extensions_dir", "pythonpath_prefix",
             "observed_versions", "cuda_visible_devices", "gpu_observation", "model_config", "tokenizer_files") if key in env}
 
 
@@ -196,13 +198,16 @@ class V3PolicyRunner:
             process_env = v2_local_env(self.environment)
             if self.config.low_kv_dtype == "nvfp4":
                 site = os.environ.get("AUTOKV_FP4_SITE", str(self.root / ".runtime/v41/site"))
-                process_env.update(PYTHONPATH=os.pathsep.join((site, str(self.root), process_env.get("PYTHONPATH", ""))),
+                # 沿用 v4.1 正式运行的 TVM-FFI 兼容路径与依赖优先级。
+                paths = [self.environment.get("pythonpath_prefix"), sysconfig.get_path("purelib"), site,
+                         str(self.root), *process_env.get("PYTHONPATH", "").split(os.pathsep)]
+                process_env.update(PYTHONPATH=os.pathsep.join(dict.fromkeys(p for p in paths if p)),
                                    AUTOKV_FP4_SITE=site,
                                    VLLM_KV_CACHE_LAYOUT="HND", VLLM_USE_TRTLLM_ATTENTION="0",
                                    FLASHINFER_CUDA_ARCH_LIST="8.6",
-                                   FLASHINFER_CUBIN_DIR=str(self.root / ".runtime/v41/cubins"),
-                                   FLASHINFER_WORKSPACE_BASE=str(self.root / ".runtime/v41/flashinfer-cache"),
-                                   TORCH_EXTENSIONS_DIR=str(self.root / ".runtime/v41/torch-extensions"))
+                                   FLASHINFER_CUBIN_DIR=self.environment.get("flashinfer_cubin_dir", str(self.root / ".runtime/v41/cubins")),
+                                   FLASHINFER_WORKSPACE_BASE=self.environment.get("flashinfer_workspace_base", str(self.root / ".runtime/v41/flashinfer-cache")),
+                                   TORCH_EXTENSIONS_DIR=self.environment.get("torch_extensions_dir", str(self.root / ".runtime/v41/torch-extensions")))
             process = self.process_factory(argv, log_path, cwd=self.root, env=process_env)
             attempt["server_starts"] = 1
             atomic_write_json(attempt_path, attempt)

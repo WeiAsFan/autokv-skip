@@ -61,7 +61,7 @@ def test_use(directory, rows):
     current = {"questions": sorted({r["source_question_id"] for r in rows}),
                "evidence": sorted({d for r in rows for d in r["evidence_document_ids"]})}
     reused = []
-    for path in sorted([*directory.parent.glob("v3-*/test-use.json"), *directory.parent.glob("v4-*/test-use.json"), *directory.parent.glob("v41-*/test-use.json")]):
+    for path in sorted([*directory.parent.glob("v3-*/test-use.json"), *directory.parent.glob("v4-*/test-use.json"), *directory.parent.glob("v41-*/test-use.json"), *directory.parent.glob("v42-*/test-use.json")]):
         if path.parent == directory or not any(p.stat().st_size for p in path.parent.glob("policies/*/test.jsonl")):
             continue
         prior = read_json(path)
@@ -108,7 +108,15 @@ def render_report(directory, config, result):
     if version == 4:
         lines += [f"两批构造确认通过：`{result.get('construction_passed')}`；测试复现数据条件：`{result.get('data_conditions_reproduced')}`。",
                   f"强恢复场景成立：`{result.get('recovery_demonstrated')}`；测试两端数据条件：`{result.get('test_data_conditions')}`。",
-                  "若新实验集的 P0 已满足最终容差，保留早停结论，不重新抽题或强制选择 BF16 层。", ""]
+                  "若实验集的 P0 已满足最终容差，保留早停结论，不重新抽题或强制选择 BF16 层。", ""]
+    if result.get("data_reuse"):
+        reuse = result["data_reuse"]
+        lines += [f"直接复用 v4.1 运行 `{reuse['source_run_id']}` 的数据，数据集 `{reuse['dataset_id']}`。",
+                  "本次未重新构造或确认；两批确认是源运行的历史证据。", ""]
+    selection = result.get("selection", {})
+    if "full_candidates_used" in selection:
+        lines += [f"搜索到第 {selection['depth_reached']} 层；完整评估候选 {selection['full_candidates_used']}/{selection['full_candidates_limit']}，其中提前确认 {selection['early_full_candidates_used']} 个。",
+                  "复筛排序决定下一轮父组合；完整实验集确认后冻结，不追加反向删层。预算内未找到不代表不存在可行解。", ""]
     data_manifest = directory / "inputs" / config.data_root / ("development" if result.get("development") else "quality") / "dataset-manifest.json"
     if data_manifest.exists():
         data = read_json(data_manifest)
@@ -167,7 +175,10 @@ def execute(config, splits, runner, directory, *, development=False, finalize_re
             if selection_path.exists():
                 selection = read_json(selection_path)
             else:
-                selection = search(config, splits["experiment"], runner, directory / "search-trace.jsonl")
+                search_method = search
+                if config.raw["search"]["schedule"] == "bounded":
+                    from autokv.v42_search import search as search_method
+                selection = search_method(config, splits["experiment"], runner, directory / "search-trace.jsonl")
                 selection.update(frozen_at=utc_now(), run_id=directory.name)
                 atomic_write_json(selection_path, selection)
             result["selection"] = selection

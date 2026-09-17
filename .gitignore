@@ -14,4 +14,5 @@ data/v4.0/v4-*/
 *.tmp
 
 data/v4.1/v41-*/
+data/v4.2/v42-*/
 .runtime/

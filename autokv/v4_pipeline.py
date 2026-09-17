@@ -42,7 +42,8 @@ def prepare_run(root, config, environment, codec, source_dir, source_info, *, ru
     code = actual_code()
     inputs_id = identity({"config": config.raw, "sources": source_info.get("files", source_info), "runtime": environment,
                           "code": code, "template": codec.template_text})
-    directory = root / "runs" / (run_id or ("v41-" if config.experiment_version == "4.1" else "v4-")+inputs_id[:16])
+    prefix = {"4.1": "v41-", "4.2": "v42-"}.get(config.experiment_version, "v4-")
+    directory = root / "runs" / (run_id or prefix+inputs_id[:16])
     path = directory / "run-manifest.json"
     if path.exists():
         if read_json(path)["inputs_id"] != inputs_id:
@@ -79,7 +80,7 @@ def prepare_run(root, config, environment, codec, source_dir, source_info, *, ru
     atomic_write_json(path, {"schema_version": 4, "run_id": directory.name, "inputs_id": inputs_id,
                             "created_at": utc_now(), "config": config.raw, "runtime": environment,
                             "source_dir": str(source_dir), "source_info": source_info,
-                            "state": "constructing", "complete": False,
+                            "state": "importing_data" if config.experiment_version == "4.2" else "constructing", "complete": False,
                             "source": "实际源码、配置、来源说明见 inputs；构造实例见 construction；Git 不是运行条件"})
     return directory
 
@@ -179,9 +180,9 @@ def execute_v4(config, root, directory, codec, get_sources, runner, source_info,
                     atomic_write_json(path, manifest)
 
 
-def run_pipeline(root, *, source_dir=None, port=8010, run_id=None, construction_only=False, config_path=CONFIG_PATH):
+def run_pipeline(root, *, source_dir=None, port=8010, run_id=None, construction_only=False, config_path=CONFIG_PATH, reuse_run=None):
     root = Path(root).resolve()
-    if run_id is not None and not re.fullmatch(r"v4(?:1)?-[A-Za-z0-9_-]+", run_id):
+    if run_id is not None and not re.fullmatch(r"v4[12]?-[A-Za-z0-9_-]+", run_id):
         raise ValueError("请输入 v4 运行 ID")
     saved = read_json(root / "runs" / run_id / "run-manifest.json") if run_id else None
     config = V4Config.from_dict(saved["config"]) if saved else load_config(root, config_path)
@@ -190,6 +191,11 @@ def run_pipeline(root, *, source_dir=None, port=8010, run_id=None, construction_
     environment = load_environment(root, config, observe_runtime=True)
     codec = TransformersPromptCodec(Path(environment["model_path"]))
     environment["chat_template"] = codec.template_text
+    if config.experiment_version == "4.2":
+        from autokv.v42_pipeline import run_reused
+        if construction_only:
+            raise ValueError("v4.2 直接复用数据，不执行构造；请省略 --construction-only")
+        return run_reused(root, config, environment, codec, port=port, run_id=run_id, reuse_run=reuse_run)
     source_dir = Path(source_dir or (saved["source_dir"] if saved else "data/v3.0/source"))
     source_dir = (root / source_dir).resolve()
     # 续跑优先已保存输入；只有补生成题时才需要再次读取原始来源。

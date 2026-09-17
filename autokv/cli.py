@@ -2367,8 +2367,9 @@ def build_parser() -> argparse.ArgumentParser:
     v3_run.add_argument("--port", type=int, default=8010)
     v3_run.add_argument("--development", action="store_true", help="仅用独立开发样本评估 BF16")
     v3_run.add_argument("--json", action="store_true")
-    v4_run = subparsers.add_parser("v4-run", help="v4 难度构造、两批确认与自动选层完整流程")
-    v4_run.add_argument("--config", default="configs/v4.1/quality.json", help="默认 v4.1 FP4；历史配置可显式指定")
+    v4_run = subparsers.add_parser("v4-run", help="v4 数据构造或复用、自动选层与独立测试")
+    v4_run.add_argument("--config", default="configs/v4.2/quality.json", help="默认 v4.2 FP4；历史配置可显式指定")
+    v4_run.add_argument("--reuse-run", help="v4.2 首次运行使用的 v4.1 原始运行目录；续跑不需要")
     v4_run.add_argument("--project-root", default=str(REPOSITORY_ROOT))
     v4_run.add_argument("--source-dir", help="本地离线来源目录；续跑默认复用保存路径")
     v4_run.add_argument("--port", type=int, default=8010)
@@ -2385,7 +2386,7 @@ def _dispatch(args: argparse.Namespace) -> Mapping[str, Any]:
         from autokv.v4_pipeline import run_pipeline as run_v4
 
         return run_v4(root, source_dir=args.source_dir, port=args.port, run_id=args.run_id,
-                      construction_only=args.construction_only, config_path=args.config)
+                      construction_only=args.construction_only, config_path=args.config, reuse_run=args.reuse_run)
     if command == "v3-make-data":
         from autokv.v3_data import make_data as make_v3_data
 
