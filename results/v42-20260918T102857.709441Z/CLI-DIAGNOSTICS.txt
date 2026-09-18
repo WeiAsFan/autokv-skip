@@ -1,0 +1,1011 @@
+===== v42-cli-background-20260917T023046Z.exitcode =====
+4
+
+===== v42-cli-background-20260917T023046Z.launch.log =====
+运行 ID：v42-5ce6b6ae69fb813a；直接复用 v4.1 数据；诊断目录：/mnt_d/huangxiaoyuan/autokv-skip-v4.2/runs/v42-5ce6b6ae69fb813a
+endpoints / P32 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]：补 512 题，目标 512 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+  已保存 144 条 experiment 回答
+  已保存 160 条 experiment 回答
+  已保存 176 条 experiment 回答
+  已保存 192 条 experiment 回答
+  已保存 208 条 experiment 回答
+  已保存 224 条 experiment 回答
+  已保存 240 条 experiment 回答
+  已保存 256 条 experiment 回答
+  已保存 272 条 experiment 回答
+  已保存 288 条 experiment 回答
+  已保存 304 条 experiment 回答
+  已保存 320 条 experiment 回答
+  已保存 336 条 experiment 回答
+  已保存 352 条 experiment 回答
+  已保存 368 条 experiment 回答
+  已保存 384 条 experiment 回答
+  已保存 400 条 experiment 回答
+  已保存 416 条 experiment 回答
+  已保存 432 条 experiment 回答
+  已保存 448 条 experiment 回答
+  已保存 464 条 experiment 回答
+  已保存 480 条 experiment 回答
+  已保存 496 条 experiment 回答
+  已保存 512 条 experiment 回答
+endpoints / P0 []：补 512 题，目标 512 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+  已保存 144 条 experiment 回答
+  已保存 160 条 experiment 回答
+  已保存 176 条 experiment 回答
+  已保存 192 条 experiment 回答
+  已保存 208 条 experiment 回答
+  已保存 224 条 experiment 回答
+  已保存 240 条 experiment 回答
+  已保存 256 条 experiment 回答
+  已保存 272 条 experiment 回答
+  已保存 288 条 experiment 回答
+  已保存 304 条 experiment 回答
+  已保存 320 条 experiment 回答
+  已保存 336 条 experiment 回答
+  已保存 352 条 experiment 回答
+  已保存 368 条 experiment 回答
+  已保存 384 条 experiment 回答
+  已保存 400 条 experiment 回答
+  已保存 416 条 experiment 回答
+  已保存 432 条 experiment 回答
+  已保存 448 条 experiment 回答
+  已保存 464 条 experiment 回答
+  已保存 480 条 experiment 回答
+  已保存 496 条 experiment 回答
+  已保存 512 条 experiment 回答
+search / P1 [0]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [1]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [2]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [3]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [4]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [5]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [6]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [7]：补 32 题，目标 32 题
+server/http error: vLLM server was not healthy after 900 seconds
+
+===== v42-cli-background-20260917T023046Z.log =====
+运行 ID：v42-5ce6b6ae69fb813a；直接复用 v4.1 数据；诊断目录：/mnt_d/huangxiaoyuan/autokv-skip-v4.2/runs/v42-5ce6b6ae69fb813a
+endpoints / P32 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]：补 512 题，目标 512 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+  已保存 144 条 experiment 回答
+  已保存 160 条 experiment 回答
+  已保存 176 条 experiment 回答
+  已保存 192 条 experiment 回答
+  已保存 208 条 experiment 回答
+  已保存 224 条 experiment 回答
+  已保存 240 条 experiment 回答
+  已保存 256 条 experiment 回答
+  已保存 272 条 experiment 回答
+  已保存 288 条 experiment 回答
+  已保存 304 条 experiment 回答
+  已保存 320 条 experiment 回答
+  已保存 336 条 experiment 回答
+  已保存 352 条 experiment 回答
+  已保存 368 条 experiment 回答
+  已保存 384 条 experiment 回答
+  已保存 400 条 experiment 回答
+  已保存 416 条 experiment 回答
+  已保存 432 条 experiment 回答
+  已保存 448 条 experiment 回答
+  已保存 464 条 experiment 回答
+  已保存 480 条 experiment 回答
+  已保存 496 条 experiment 回答
+  已保存 512 条 experiment 回答
+endpoints / P0 []：补 512 题，目标 512 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+  已保存 144 条 experiment 回答
+  已保存 160 条 experiment 回答
+  已保存 176 条 experiment 回答
+  已保存 192 条 experiment 回答
+  已保存 208 条 experiment 回答
+  已保存 224 条 experiment 回答
+  已保存 240 条 experiment 回答
+  已保存 256 条 experiment 回答
+  已保存 272 条 experiment 回答
+  已保存 288 条 experiment 回答
+  已保存 304 条 experiment 回答
+  已保存 320 条 experiment 回答
+  已保存 336 条 experiment 回答
+  已保存 352 条 experiment 回答
+  已保存 368 条 experiment 回答
+  已保存 384 条 experiment 回答
+  已保存 400 条 experiment 回答
+  已保存 416 条 experiment 回答
+  已保存 432 条 experiment 回答
+  已保存 448 条 experiment 回答
+  已保存 464 条 experiment 回答
+  已保存 480 条 experiment 回答
+  已保存 496 条 experiment 回答
+  已保存 512 条 experiment 回答
+search / P1 [0]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [1]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [2]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [3]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [4]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [5]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [6]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [7]：补 32 题，目标 32 题
+server/http error: vLLM server was not healthy after 900 seconds
+
+===== v42-cli-background-20260917T050733Z.exitcode =====
+0
+
+===== v42-cli-background-20260917T050733Z.launch.log =====
+运行 ID：v42-5ce6b6ae69fb813a；直接复用 v4.1 数据；诊断目录：/mnt_d/huangxiaoyuan/autokv-skip-v4.2/runs/v42-5ce6b6ae69fb813a
+search / P1 [7]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [9]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [10]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [11]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [12]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [13]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [14]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [15]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [16]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [17]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [18]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [20]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [21]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [22]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [23]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [24]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [25]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [26]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [27]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [28]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [29]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [30]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [31]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [19]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [2]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [8]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [18]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [17]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [16]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [26]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [28]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [0, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [0, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [1, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [1, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [2, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [2, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [3, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [3, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [4, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [4, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [5, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [5, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [6, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [6, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [7, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [7, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 9]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 10]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 11]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 12]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 13]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 14]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 15]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 16]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 17]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 18]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 20]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 21]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 22]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 23]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 24]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 25]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 26]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 27]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 28]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 29]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 30]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 31]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [9, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [10, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [11, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [12, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [13, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [14, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [15, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [16, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [17, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [18, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 20]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 21]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 22]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 23]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 24]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 25]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 26]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 27]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 28]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 29]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 30]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 31]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 29]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [19, 21]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [19, 31]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [19, 30]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 14]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 19]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 22]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [5, 8]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 19]：补 384 题，目标 512 题
+  已保存 144 条 experiment 回答
+  已保存 160 条 experiment 回答
+  已保存 176 条 experiment 回答
+  已保存 192 条 experiment 回答
+  已保存 208 条 experiment 回答
+  已保存 224 条 experiment 回答
+  已保存 240 条 experiment 回答
+  已保存 256 条 experiment 回答
+  已保存 272 条 experiment 回答
+  已保存 288 条 experiment 回答
+  已保存 304 条 experiment 回答
+  已保存 320 条 experiment 回答
+  已保存 336 条 experiment 回答
+  已保存 352 条 experiment 回答
+  已保存 368 条 experiment 回答
+  已保存 384 条 experiment 回答
+  已保存 400 条 experiment 回答
+  已保存 416 条 experiment 回答
+  已保存 432 条 experiment 回答
+  已保存 448 条 experiment 回答
+  已保存 464 条 experiment 回答
+  已保存 480 条 experiment 回答
+  已保存 496 条 experiment 回答
+  已保存 512 条 experiment 回答
+search / P3 [0, 5, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P3 [0, 8, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P3 [1, 5, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P3 [1, 8, 19]：补 32
+[中间省略 71858 字节；完整日志保留在服务器]
+t 回答
+{"candidate": null, "complete": true, "construction_passed": true, "construction_status": "construction_passed", "cost": {"phases": {"development": {"requests": 0, "retries": 0, "seconds": 0, "server_starts": 0}, "endpoints": {"requests": 1024, "retries": 0, "seconds": 1478.349834511755, "server_starts": 2}, "search": {"requests": 24128, "retries": 0, "seconds": 53581.33780751913, "server_starts": 545}, "test": {"requests": 0, "retries": 0, "seconds": 0, "server_starts": 0}}, "timing_incomplete": false, "total": {"requests": 25152, "retries": 0, "seconds": 55059.68764203088, "server_starts": 547}}, "coverage": {"empty_answers": 0, "full_experiment_configs": 8, "input_tokens": 206628552, "length_finished": 0, "output_tokens": 201259, "partial_experiment_configs": 460, "successful_answers": 25152}, "data_conditions_reproduced": null, "data_reuse": {"dataset_id": "cdfa714f4b3cdada1efa6208", "files": [{"file": "experiment.jsonl", "sha256": "6f59c3801027c6ebb7b7d93ac51c7d32095d397f3d8b47845ba0acedd87cec01"}, {"file": "test.jsonl", "sha256": "50c9b8054829e6a9486fdfbe0414f311a96554b0634cbcd475ec7459e0dd1c2e"}, {"file": "dataset-manifest.json", "sha256": "ff78a4a193f665efb037b3ce36bf8c9a66b2ade21d23a5010e7d6580a45a9812"}], "selected_rule": {"chat_template": "{%- if messages[0][\"role\"] == \"system\" %}\n    {%- set system_message = messages[0][\"content\"] %}\n    {%- set loop_messages = messages[1:] %}\n{%- else %}\n    {%- set loop_messages = messages %}\n{%- endif %}\n{%- if not tools is defined %}\n    {%- set tools = none %}\n{%- endif %}\n{%- set user_messages = loop_messages | selectattr(\"role\", \"equalto\", \"user\") | list %}\n\n{#- This block checks for alternating user/assistant messages, skipping tool calling messages #}\n{%- set ns = namespace() %}\n{%- set ns.index = 0 %}\n{%- for message in loop_messages %}\n    {%- if not (message.role == \"tool\" or message.role == \"tool_results\" or (message.tool_calls is defined and message.tool_calls is not none)) %}\n        {%- if (message[\"role\"] == \"user\") != (ns.index % 2 == 0) %}\n            {{- raise_exception(\"After the optional system message, conversation roles must alternate user/assistant/user/assistant/...\") }}\n        {%- endif %}\n        {%- set ns.index = ns.index + 1 %}\n    {%- endif %}\n{%- endfor %}\n\n{{- bos_token }}\n{%- for message in loop_messages %}\n    {%- if message[\"role\"] == \"user\" %}\n        {%- if tools is not none and (message == user_messages[-1]) %}\n            {{- \"[AVAILABLE_TOOLS] [\" }}\n            {%- for tool in tools %}\n                {%- set tool = tool.function %}\n                {{- '{\"type\": \"function\", \"function\": {' }}\n                {%- for key, val in tool.items() if key != \"return\" %}\n                    {%- if val is string %}\n                        {{- '\"' + key + '\": \"' + val + '\"' }}\n                    {%- else %}\n                        {{- '\"' + key + '\": ' + val|tojson }}\n                    {%- endif %}\n                    {%- if not loop.last %}\n                        {{- \", \" }}\n                    {%- endif %}\n                {%- endfor %}\n                {{- \"}}\" }}\n                {%- if not loop.last %}\n                    {{- \", \" }}\n                {%- else %}\n                    {{- \"]\" }}\n                {%- endif %}\n            {%- endfor %}\n            {{- \"[/AVAILABLE_TOOLS]\" }}\n            {%- endif %}\n        {%- if loop.last and system_message is defined %}\n            {{- \"[INST] \" + system_message + \"\\n\\n\" + message[\"content\"] + \"[/INST]\" }}\n        {%- else %}\n            {{- \"[INST] \" + message[\"content\"] + \"[/INST]\" }}\n        {%- endif %}\n    {%- elif message.tool_calls is defined and message.tool_calls is not none %}\n        {{- \"[TOOL_CALLS] [\" }}\n        {%- for tool_call in message.tool_calls %}\n            {%- set out = tool_call.function|tojson %}\n            {{- out[:-1] }}\n            {%- if not tool_call.id is defined or tool_call.id|length != 9 %}\n                {{- raise_exception(\"Tool call IDs should be alphanumeric strings with length 9!\") }}\n            {%- endif %}\n            {{- ', \"id\": \"' + tool_call.id + '\"}' }}\n            {%- if not loop.last %}\n                {{- \", \" }}\n            {%- else %}\n                {{- \"]\" + eos_token }}\n            {%- endif %}\n        {%- endfor %}\n    {%- elif message[\"role\"] == \"assistant\" %}\n        {{- \" \" + message[\"content\"]|trim + eos_token}}\n    {%- elif message[\"role\"] == \"tool_results\" or message[\"role\"] == \"tool\" %}\n        {%- if message.content is defined and message.content.content is defined %}\n            {%- set content = message.content.content %}\n        {%- else %}\n            {%- set content = message.content %}\n        {%- endif %}\n        {{- '[TOOL_RESULTS] {\"content\": ' + content|string + \", \" }}\n        {%- if not message.tool_call_id is defined or message.tool_call_id|length != 9 %}\n            {{- raise_exception(\"Tool call IDs should be alphanumeric strings with length 9!\") }}\n        {%- endif %}\n        {{- '\"call_id\": \"' + message.tool_call_id + '\"}[/TOOL_RESULTS]' }}\n    {%- else %}\n        {{- raise_exception(\"Only user and assistant roles are supported, with the exception of an initial optional system message!\") }}\n    {%- endif %}\n{%- endfor %}\n", "condition": {"condition_id": "single_lookup-l8192-r128", "length_bucket": 8192, "record_count": 128, "task": "single_lookup"}, "confirmation": [{"batch_id": "batch-1", "bf16_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 67, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "bf16_interval95": [0.8371591247862454, 0.8956241626683451], "bf16_score": 0.869140625, "bf16_solvable": true, "bf16_successes": 445, "count": 512, "fp4_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 151, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "fp4_recovery_needed": true, "fp4_score": 0.705078125, "fp4_successes": 361, "gap": 0.1640625, "gap_interval95": [0.123046875, 0.205078125], "gap_interval_status": "estimated", "note": "点判据与区间分开；退化区间不能解释为总体误差为零，区间未经同时覆盖校正", "passed": true}, {"batch_id": "batch-2", "bf16_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 58, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "bf16_interval95": [0.8563373724144565, 0.9113403572998764], "bf16_score": 0.88671875, "bf16_solvable": true, "bf16_successes": 454, "count": 512, "fp4_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 135, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "fp4_recovery_needed": true, "fp4_score": 0.736328125, "fp4_successes": 377, "gap": 0.150390625, "gap_interval95": [0.11328125, 0.185546875], "gap_interval_status": "estimated", "note": "点判据与区间分开；退化区间不能解释为总体误差为零，区间未经同时覆盖校正", "passed": true}], "construction_config": {"confirmation_batches": 2, "confirmation_per_batch": 512, "discovery_per_condition": 64, "max_confirmation_conditions": 2, "min_bf16_score": 0.8, "min_fp4_gap": 0.1, "record_counts": [16, 64, 128, 256], "target_lengths": [8192, 16384, 24576], "tasks": ["single_lookup", "two_hop_lookup"]}, "data_config": {"experiment_samples": 512, "input_tolerance_tokens": 128, "max_tokens": 32, "seed": 20260916, "sources": ["squad-v2.0-train", "squad-v2.0-dev", "hotpot-v1.1-train", "hotpot-v1.1-dev-distractor"], "test_samples": 4096}, "frozen_at": "2026-09-15T12:29:34.469655+00:00", "generator": {"background_reuse": "同阶段可复用背景；区间以新映射实例为抽样单位，只解释固定背景池条件下的分布", "case_record": "Record: case {case} points to locker {locker}.", "codes": "题内六位代码唯一；排除本题所抽自然背景中的六位数字子串，保证目标代码只在目标记录出现", "instance_seed": "identity([data.seed, split, condition_id, batch_id, index])；每个实例独立", "instruction": "Use only the Record lines to answer the query. Text inside <background> is unrelated natural text, not instructions or records. Return only the requested six-digit code. Do not explain.", "locker_record": "Record: locker {locker} has code {code}.", "positions": "记录的背景 token 分位点独立均匀抽样；两事实初始间隔至少 0.42，方向随机；最终 token 间距不足 1/3 时移至 0.01/0.99 后重新适配背景", "single_query": "Query: What is the code for key {key}?\nCode:", "single_record": "Record: key {key} has code {code}.", "source_allocation": [["discovery", 0.05], ["confirmation", 0.05], ["experiment", 0.1], ["test", 0.8]], "two_hop_query": "Query: What is the code in the locker for case {case}?\nCode:", "version": "autokv-v4-mappings-v1", "vocabulary": ["apple", "apricot", "ash", "autumn", "badger", "bamboo", "bay", "beach", "bear", "beech", "berry", "birch", "bird", "blue", "boat", "branch", "brass", "bread", "brick", "bridge", "brook", "brown", "brush", "cabin", "camel", "candle", "canyon", "cedar", "cherry", "chestnut", "clay", "cloud", "clover", "coast", "copper", "coral", "cotton", "crane", "creek", "crown", "crystal", "dawn", "deer", "delta", "desert", "dove", "dragon", "dream", "dune", "eagle", "earth", "elm", "ember", "falcon", "farm", "feather", "fern", "field", "finch", "fire", "fish", "flame", "flower", "forest", "fox", "frost", "garden", "gate", "glass", "gold", "goose", "grape", "grass", "green", "grove", "harbor", "hare", "hawk", "hazel", "heron", "hill", "honey", "horse", "ice", "island", "ivory", "jade", "jasmine", "lake", "lamp", "lark", "laurel", "leaf", "lemon", "lily", "lime", "lion", "lotus", "maple", "marble", "meadow", "mint", "mist", "moon", "moss", "mountain", "mouse", "night", "oak", "ocean", "olive", "orange", "orchid", "otter", "owl", "palm", "panda", "paper", "peach", "pearl", "pebble", "pine", "plum", "pond", "poppy", "purple", "quartz", "rabbit", "rain", "raven", "red", "reed", "reef", "river", "robin", "rock", "rose", "ruby", "sage", "sand", "scarlet", "sea", "seal", "shadow", "shell", "silver", "sky", "slate", "snow", "sparrow", "spring", "spruce", "star", "stone", "storm", "stream", "summer", "sun", "swan", "teal", "thorn", "tiger", "timber", "trail", "tree", "tulip", "valley", "violet", "walnut", "wave", "wheat", "white", "willow", "wind", "winter", "wolf", "wood", "yellow", "zebra"]}, "run_id": "v41-40ef467cef6a32d2", "schema_version": 4, "scoring": {"bootstrap_samples": 2000, "bootstrap_seed": 20260915, "version": "autokv-v4-short-code-v1"}, "source_allocation_path": "inputs/source-allocation.json", "sources": {"files": [{"file": "train-v2.0.json", "name": "squad-v2.0-train", "sha256": "68dcfbb971bd3e96d5b46c7177b16c1a4e7d4bdef19fb204502738552dede002"}, {"file": "dev-v2.0.json", "name": "squad-v2.0-dev", "sha256": "80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8"}, {"file": "hotpot_train_v1.1.json", "name": "hotpot-v1.1-train", "sha256": "265223907eb83f4b07d7d586d62dadcb8a9bed8c23181dab463d766dbc369ce4"}, {"file": "hotpot_dev_distractor_v1.json", "name": "hotpot-v1.1-dev-distractor", "sha256": "6637d50c7a5c68904b0ef9cca6b3b222dc3510063258a1766cfb976d5cbe42ef"}], "manifest": {"attribution": ["SQuAD 2.0: Rajpurkar, Jia, Liang (2018), https://rajpurkar.github.io/SQuAD-explorer/", "HotpotQA: Yang et al. (2018), https://hotpotqa.github.io/"], "license_url": "https://creativecommons.org/licenses/by-sa/4.0/", "schema_version": 3, "sources": [{"bytes": 42123633, "file": "train-v2.0.json", "license": "CC BY-SA 4.0", "name": "squad-v2.0-train", "origin": {"imported_file": "train-v2.0.json"}, "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v2.0.json"}, {"bytes": 4370528, "file": "dev-v2.0.json", "license": "CC BY-SA 4.0", "name": "squad-v2.0-dev", "origin": {"imported_file": "dev-v2.0.json"}, "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json"}, {"bytes": 561873111, "file": "hotpot_train_v1.1.json", "license": "CC BY-SA 4.0", "name": "hotpot-v1.1-train", "origin": {"config": "distractor", "conversion": "从 Hugging Face Parquet 镜像恢复为原始 HotpotQA JSON 结构；正文与证据未裁剪", "download_url": "https://huggingface.co/datasets/hotpotqa/hotpot_qa/resolve/refs%2Fconvert%2Fparquet/distractor/train/0000.parquet", "parquet_files": ["distractor/train/0000.parquet", "distractor/train/0001.parquet"], "repository": "hotpotqa/hotpot_qa", "rows": 90447, "split": "train"}, "url": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_train_v1.1.json"}, {"bytes": 46436401, "file": "hotpot_dev_distractor_v1.json", "license": "CC BY-SA 4.0", "name": "hotpot-v1.1-dev-distractor", "origin": {"config": "distractor", "conversion": "从 Hugging Face Parquet 镜像恢复为原始 HotpotQA JSON 结构；正文与证据未裁剪", "download_url": "https://huggingface.co/datasets/hotpotqa/hotpot_qa/resolve/refs%2Fconvert%2Fparquet/distractor/validation-00000-of-00001.parquet", "parquet_files": ["distractor/validation-00000-of-00001.parquet"], "repository": "hotpotqa/hotpot_qa", "rows": 7405, "split": "validation"}, "url": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json"}], "usage": "本项目重新划分来源，构造长上下文和自定义评分；不属于官方榜单评估"}}}, "source_run_id": "v41-40ef467cef6a32d2", "test_previously_used": false}, "development": false, "finished_at": "2026-09-17T19:36:27.907478+00:00", "quality_passed": false, "recovery_demonstrated": false, "report": "/mnt_d/huangxiaoyuan/autokv-skip-v4.2/runs/v42-5ce6b6ae69fb813a/report/QUALITY-v4.zh-CN.md", "run_id": "v42-5ce6b6ae69fb813a", "schema_version": 4, "scores": {"experiment": {"P0": {"all": 0.7578125, "cells": {"single_lookup:8192": 0.7578125}, "count": 512, "lengths": {"8192": 0.7578125}, "single_lookup": 0.7578125}, "P32": {"all": 0.8828125, "cells": {"single_lookup:8192": 0.8828125}, "count": 512, "lengths": {"8192": 0.8828125}, "single_lookup": 0.8828125}}}, "selection": {"candidate": null, "depth_reached": 9, "early_full_candidates_used": 3, "frozen_at": "2026-09-17T19:36:27.904522+00:00", "full_candidates_limit": 6, "full_candidates_used": 6, "full_evaluated": [{"bf16_layers": [8, 19], "config_id": "65c2f7facdaa", "fp4_layers": [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], "k": 2, "name": "p2-8-19"}, {"bf16_layers": [5, 8, 19], "config_id": "81090718adcc", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], "k": 3, "name": "p3-5-8-19"}, {"bf16_layers": [5, 8, 19, 29], "config_id": "a20744f75392", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31], "k": 4, "name": "p4-5-8-19-29"}, {"bf16_layers": [5, 8, 19, 20, 25, 26, 27, 28], "config_id": "3a6f2cfa2a92", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 29, 30, 31], "k": 8, "name": "p8-5-8-19-20-25-26-27-28"}, {"bf16_layers": [5, 8, 19, 20, 29], "config_id": "3ac93246e1d9", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31], "k": 5, "name": "p5-5-8-19-20-29"}, {"bf16_layers": [5, 8, 19, 20, 23, 26], "config_id": "a73578a4764d", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 24, 25, 27, 28, 29, 30, 31], "k": 6, "name": "p6-5-8-19-20-23-26"}], "p0": {"all": 0.7578125, "cells": {"single_lookup:8192": 0.7578125}, "count": 512, "lengths": {"8192": 0.7578125}, "single_lookup": 0.7578125}, "pruning_complete": false, "pruning_status": "not_requested", "reason": "已完成容量允许深度及预定完整评估；预算内未找到可行解，不代表不存在", "reference": {"all": 0.8828125, "cells": {"single_lookup:8192": 0.8828125}, "count": 512, "lengths": {"8192": 0.8828125}, "single_lookup": 0.8828125}, "run_id": "v42-5ce6b6ae69fb813a", "status": "no_feasible_within_budget"}, "stage": "quality", "status": "no_feasible_within_budget", "technical_goal_passed": false, "test_data_conditions": null}
+
+===== v42-cli-background-20260917T050733Z.log =====
+运行 ID：v42-5ce6b6ae69fb813a；直接复用 v4.1 数据；诊断目录：/mnt_d/huangxiaoyuan/autokv-skip-v4.2/runs/v42-5ce6b6ae69fb813a
+search / P1 [7]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [9]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [10]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [11]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [12]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [13]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [14]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [15]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [16]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [17]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [18]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [20]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [21]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [22]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [23]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [24]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [25]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [26]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [27]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [28]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [29]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [30]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [31]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P1 [19]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [2]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [8]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [18]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [17]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [16]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [26]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P1 [28]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [0, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [0, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [1, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [1, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [2, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [2, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [3, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [3, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [4, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [4, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [5, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [5, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [6, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [6, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [7, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [7, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 9]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 10]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 11]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 12]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 13]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 14]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 15]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 16]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 17]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 18]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 20]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 21]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 22]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 23]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 24]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 25]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 26]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 27]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 28]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 29]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 30]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [8, 31]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [9, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [10, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [11, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [12, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [13, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [14, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [15, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [16, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [17, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [18, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 20]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 21]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 22]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 23]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 24]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 25]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 26]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 27]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 28]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 29]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 30]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 31]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P2 [19, 29]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [19, 21]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [19, 31]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [19, 30]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 14]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 19]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 22]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [5, 8]：补 96 题，目标 128 题
+  已保存 48 条 experiment 回答
+  已保存 64 条 experiment 回答
+  已保存 80 条 experiment 回答
+  已保存 96 条 experiment 回答
+  已保存 112 条 experiment 回答
+  已保存 128 条 experiment 回答
+search / P2 [8, 19]：补 384 题，目标 512 题
+  已保存 144 条 experiment 回答
+  已保存 160 条 experiment 回答
+  已保存 176 条 experiment 回答
+  已保存 192 条 experiment 回答
+  已保存 208 条 experiment 回答
+  已保存 224 条 experiment 回答
+  已保存 240 条 experiment 回答
+  已保存 256 条 experiment 回答
+  已保存 272 条 experiment 回答
+  已保存 288 条 experiment 回答
+  已保存 304 条 experiment 回答
+  已保存 320 条 experiment 回答
+  已保存 336 条 experiment 回答
+  已保存 352 条 experiment 回答
+  已保存 368 条 experiment 回答
+  已保存 384 条 experiment 回答
+  已保存 400 条 experiment 回答
+  已保存 416 条 experiment 回答
+  已保存 432 条 experiment 回答
+  已保存 448 条 experiment 回答
+  已保存 464 条 experiment 回答
+  已保存 480 条 experiment 回答
+  已保存 496 条 experiment 回答
+  已保存 512 条 experiment 回答
+search / P3 [0, 5, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P3 [0, 8, 19]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P3 [1, 5, 8]：补 32 题，目标 32 题
+  已保存 16 条 experiment 回答
+  已保存 32 条 experiment 回答
+search / P3 [1, 8, 19]：补 32
+[中间省略 71858 字节；完整日志保留在服务器]
+t 回答
+{"candidate": null, "complete": true, "construction_passed": true, "construction_status": "construction_passed", "cost": {"phases": {"development": {"requests": 0, "retries": 0, "seconds": 0, "server_starts": 0}, "endpoints": {"requests": 1024, "retries": 0, "seconds": 1478.349834511755, "server_starts": 2}, "search": {"requests": 24128, "retries": 0, "seconds": 53581.33780751913, "server_starts": 545}, "test": {"requests": 0, "retries": 0, "seconds": 0, "server_starts": 0}}, "timing_incomplete": false, "total": {"requests": 25152, "retries": 0, "seconds": 55059.68764203088, "server_starts": 547}}, "coverage": {"empty_answers": 0, "full_experiment_configs": 8, "input_tokens": 206628552, "length_finished": 0, "output_tokens": 201259, "partial_experiment_configs": 460, "successful_answers": 25152}, "data_conditions_reproduced": null, "data_reuse": {"dataset_id": "cdfa714f4b3cdada1efa6208", "files": [{"file": "experiment.jsonl", "sha256": "6f59c3801027c6ebb7b7d93ac51c7d32095d397f3d8b47845ba0acedd87cec01"}, {"file": "test.jsonl", "sha256": "50c9b8054829e6a9486fdfbe0414f311a96554b0634cbcd475ec7459e0dd1c2e"}, {"file": "dataset-manifest.json", "sha256": "ff78a4a193f665efb037b3ce36bf8c9a66b2ade21d23a5010e7d6580a45a9812"}], "selected_rule": {"chat_template": "{%- if messages[0][\"role\"] == \"system\" %}\n    {%- set system_message = messages[0][\"content\"] %}\n    {%- set loop_messages = messages[1:] %}\n{%- else %}\n    {%- set loop_messages = messages %}\n{%- endif %}\n{%- if not tools is defined %}\n    {%- set tools = none %}\n{%- endif %}\n{%- set user_messages = loop_messages | selectattr(\"role\", \"equalto\", \"user\") | list %}\n\n{#- This block checks for alternating user/assistant messages, skipping tool calling messages #}\n{%- set ns = namespace() %}\n{%- set ns.index = 0 %}\n{%- for message in loop_messages %}\n    {%- if not (message.role == \"tool\" or message.role == \"tool_results\" or (message.tool_calls is defined and message.tool_calls is not none)) %}\n        {%- if (message[\"role\"] == \"user\") != (ns.index % 2 == 0) %}\n            {{- raise_exception(\"After the optional system message, conversation roles must alternate user/assistant/user/assistant/...\") }}\n        {%- endif %}\n        {%- set ns.index = ns.index + 1 %}\n    {%- endif %}\n{%- endfor %}\n\n{{- bos_token }}\n{%- for message in loop_messages %}\n    {%- if message[\"role\"] == \"user\" %}\n        {%- if tools is not none and (message == user_messages[-1]) %}\n            {{- \"[AVAILABLE_TOOLS] [\" }}\n            {%- for tool in tools %}\n                {%- set tool = tool.function %}\n                {{- '{\"type\": \"function\", \"function\": {' }}\n                {%- for key, val in tool.items() if key != \"return\" %}\n                    {%- if val is string %}\n                        {{- '\"' + key + '\": \"' + val + '\"' }}\n                    {%- else %}\n                        {{- '\"' + key + '\": ' + val|tojson }}\n                    {%- endif %}\n                    {%- if not loop.last %}\n                        {{- \", \" }}\n                    {%- endif %}\n                {%- endfor %}\n                {{- \"}}\" }}\n                {%- if not loop.last %}\n                    {{- \", \" }}\n                {%- else %}\n                    {{- \"]\" }}\n                {%- endif %}\n            {%- endfor %}\n            {{- \"[/AVAILABLE_TOOLS]\" }}\n            {%- endif %}\n        {%- if loop.last and system_message is defined %}\n            {{- \"[INST] \" + system_message + \"\\n\\n\" + message[\"content\"] + \"[/INST]\" }}\n        {%- else %}\n            {{- \"[INST] \" + message[\"content\"] + \"[/INST]\" }}\n        {%- endif %}\n    {%- elif message.tool_calls is defined and message.tool_calls is not none %}\n        {{- \"[TOOL_CALLS] [\" }}\n        {%- for tool_call in message.tool_calls %}\n            {%- set out = tool_call.function|tojson %}\n            {{- out[:-1] }}\n            {%- if not tool_call.id is defined or tool_call.id|length != 9 %}\n                {{- raise_exception(\"Tool call IDs should be alphanumeric strings with length 9!\") }}\n            {%- endif %}\n            {{- ', \"id\": \"' + tool_call.id + '\"}' }}\n            {%- if not loop.last %}\n                {{- \", \" }}\n            {%- else %}\n                {{- \"]\" + eos_token }}\n            {%- endif %}\n        {%- endfor %}\n    {%- elif message[\"role\"] == \"assistant\" %}\n        {{- \" \" + message[\"content\"]|trim + eos_token}}\n    {%- elif message[\"role\"] == \"tool_results\" or message[\"role\"] == \"tool\" %}\n        {%- if message.content is defined and message.content.content is defined %}\n            {%- set content = message.content.content %}\n        {%- else %}\n            {%- set content = message.content %}\n        {%- endif %}\n        {{- '[TOOL_RESULTS] {\"content\": ' + content|string + \", \" }}\n        {%- if not message.tool_call_id is defined or message.tool_call_id|length != 9 %}\n            {{- raise_exception(\"Tool call IDs should be alphanumeric strings with length 9!\") }}\n        {%- endif %}\n        {{- '\"call_id\": \"' + message.tool_call_id + '\"}[/TOOL_RESULTS]' }}\n    {%- else %}\n        {{- raise_exception(\"Only user and assistant roles are supported, with the exception of an initial optional system message!\") }}\n    {%- endif %}\n{%- endfor %}\n", "condition": {"condition_id": "single_lookup-l8192-r128", "length_bucket": 8192, "record_count": 128, "task": "single_lookup"}, "confirmation": [{"batch_id": "batch-1", "bf16_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 67, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "bf16_interval95": [0.8371591247862454, 0.8956241626683451], "bf16_score": 0.869140625, "bf16_solvable": true, "bf16_successes": 445, "count": 512, "fp4_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 151, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "fp4_recovery_needed": true, "fp4_score": 0.705078125, "fp4_successes": 361, "gap": 0.1640625, "gap_interval95": [0.123046875, 0.205078125], "gap_interval_status": "estimated", "note": "点判据与区间分开；退化区间不能解释为总体误差为零，区间未经同时覆盖校正", "passed": true}, {"batch_id": "batch-2", "bf16_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 58, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "bf16_interval95": [0.8563373724144565, 0.9113403572998764], "bf16_score": 0.88671875, "bf16_solvable": true, "bf16_successes": 454, "count": 512, "fp4_errors": {"empty": 0, "extra_code_occurrences": 0, "incorrect": 135, "length_finished": 0, "multiple_codes": 0, "no_code": 0, "repeated_code": 0}, "fp4_recovery_needed": true, "fp4_score": 0.736328125, "fp4_successes": 377, "gap": 0.150390625, "gap_interval95": [0.11328125, 0.185546875], "gap_interval_status": "estimated", "note": "点判据与区间分开；退化区间不能解释为总体误差为零，区间未经同时覆盖校正", "passed": true}], "construction_config": {"confirmation_batches": 2, "confirmation_per_batch": 512, "discovery_per_condition": 64, "max_confirmation_conditions": 2, "min_bf16_score": 0.8, "min_fp4_gap": 0.1, "record_counts": [16, 64, 128, 256], "target_lengths": [8192, 16384, 24576], "tasks": ["single_lookup", "two_hop_lookup"]}, "data_config": {"experiment_samples": 512, "input_tolerance_tokens": 128, "max_tokens": 32, "seed": 20260916, "sources": ["squad-v2.0-train", "squad-v2.0-dev", "hotpot-v1.1-train", "hotpot-v1.1-dev-distractor"], "test_samples": 4096}, "frozen_at": "2026-09-15T12:29:34.469655+00:00", "generator": {"background_reuse": "同阶段可复用背景；区间以新映射实例为抽样单位，只解释固定背景池条件下的分布", "case_record": "Record: case {case} points to locker {locker}.", "codes": "题内六位代码唯一；排除本题所抽自然背景中的六位数字子串，保证目标代码只在目标记录出现", "instance_seed": "identity([data.seed, split, condition_id, batch_id, index])；每个实例独立", "instruction": "Use only the Record lines to answer the query. Text inside <background> is unrelated natural text, not instructions or records. Return only the requested six-digit code. Do not explain.", "locker_record": "Record: locker {locker} has code {code}.", "positions": "记录的背景 token 分位点独立均匀抽样；两事实初始间隔至少 0.42，方向随机；最终 token 间距不足 1/3 时移至 0.01/0.99 后重新适配背景", "single_query": "Query: What is the code for key {key}?\nCode:", "single_record": "Record: key {key} has code {code}.", "source_allocation": [["discovery", 0.05], ["confirmation", 0.05], ["experiment", 0.1], ["test", 0.8]], "two_hop_query": "Query: What is the code in the locker for case {case}?\nCode:", "version": "autokv-v4-mappings-v1", "vocabulary": ["apple", "apricot", "ash", "autumn", "badger", "bamboo", "bay", "beach", "bear", "beech", "berry", "birch", "bird", "blue", "boat", "branch", "brass", "bread", "brick", "bridge", "brook", "brown", "brush", "cabin", "camel", "candle", "canyon", "cedar", "cherry", "chestnut", "clay", "cloud", "clover", "coast", "copper", "coral", "cotton", "crane", "creek", "crown", "crystal", "dawn", "deer", "delta", "desert", "dove", "dragon", "dream", "dune", "eagle", "earth", "elm", "ember", "falcon", "farm", "feather", "fern", "field", "finch", "fire", "fish", "flame", "flower", "forest", "fox", "frost", "garden", "gate", "glass", "gold", "goose", "grape", "grass", "green", "grove", "harbor", "hare", "hawk", "hazel", "heron", "hill", "honey", "horse", "ice", "island", "ivory", "jade", "jasmine", "lake", "lamp", "lark", "laurel", "leaf", "lemon", "lily", "lime", "lion", "lotus", "maple", "marble", "meadow", "mint", "mist", "moon", "moss", "mountain", "mouse", "night", "oak", "ocean", "olive", "orange", "orchid", "otter", "owl", "palm", "panda", "paper", "peach", "pearl", "pebble", "pine", "plum", "pond", "poppy", "purple", "quartz", "rabbit", "rain", "raven", "red", "reed", "reef", "river", "robin", "rock", "rose", "ruby", "sage", "sand", "scarlet", "sea", "seal", "shadow", "shell", "silver", "sky", "slate", "snow", "sparrow", "spring", "spruce", "star", "stone", "storm", "stream", "summer", "sun", "swan", "teal", "thorn", "tiger", "timber", "trail", "tree", "tulip", "valley", "violet", "walnut", "wave", "wheat", "white", "willow", "wind", "winter", "wolf", "wood", "yellow", "zebra"]}, "run_id": "v41-40ef467cef6a32d2", "schema_version": 4, "scoring": {"bootstrap_samples": 2000, "bootstrap_seed": 20260915, "version": "autokv-v4-short-code-v1"}, "source_allocation_path": "inputs/source-allocation.json", "sources": {"files": [{"file": "train-v2.0.json", "name": "squad-v2.0-train", "sha256": "68dcfbb971bd3e96d5b46c7177b16c1a4e7d4bdef19fb204502738552dede002"}, {"file": "dev-v2.0.json", "name": "squad-v2.0-dev", "sha256": "80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8"}, {"file": "hotpot_train_v1.1.json", "name": "hotpot-v1.1-train", "sha256": "265223907eb83f4b07d7d586d62dadcb8a9bed8c23181dab463d766dbc369ce4"}, {"file": "hotpot_dev_distractor_v1.json", "name": "hotpot-v1.1-dev-distractor", "sha256": "6637d50c7a5c68904b0ef9cca6b3b222dc3510063258a1766cfb976d5cbe42ef"}], "manifest": {"attribution": ["SQuAD 2.0: Rajpurkar, Jia, Liang (2018), https://rajpurkar.github.io/SQuAD-explorer/", "HotpotQA: Yang et al. (2018), https://hotpotqa.github.io/"], "license_url": "https://creativecommons.org/licenses/by-sa/4.0/", "schema_version": 3, "sources": [{"bytes": 42123633, "file": "train-v2.0.json", "license": "CC BY-SA 4.0", "name": "squad-v2.0-train", "origin": {"imported_file": "train-v2.0.json"}, "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v2.0.json"}, {"bytes": 4370528, "file": "dev-v2.0.json", "license": "CC BY-SA 4.0", "name": "squad-v2.0-dev", "origin": {"imported_file": "dev-v2.0.json"}, "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json"}, {"bytes": 561873111, "file": "hotpot_train_v1.1.json", "license": "CC BY-SA 4.0", "name": "hotpot-v1.1-train", "origin": {"config": "distractor", "conversion": "从 Hugging Face Parquet 镜像恢复为原始 HotpotQA JSON 结构；正文与证据未裁剪", "download_url": "https://huggingface.co/datasets/hotpotqa/hotpot_qa/resolve/refs%2Fconvert%2Fparquet/distractor/train/0000.parquet", "parquet_files": ["distractor/train/0000.parquet", "distractor/train/0001.parquet"], "repository": "hotpotqa/hotpot_qa", "rows": 90447, "split": "train"}, "url": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_train_v1.1.json"}, {"bytes": 46436401, "file": "hotpot_dev_distractor_v1.json", "license": "CC BY-SA 4.0", "name": "hotpot-v1.1-dev-distractor", "origin": {"config": "distractor", "conversion": "从 Hugging Face Parquet 镜像恢复为原始 HotpotQA JSON 结构；正文与证据未裁剪", "download_url": "https://huggingface.co/datasets/hotpotqa/hotpot_qa/resolve/refs%2Fconvert%2Fparquet/distractor/validation-00000-of-00001.parquet", "parquet_files": ["distractor/validation-00000-of-00001.parquet"], "repository": "hotpotqa/hotpot_qa", "rows": 7405, "split": "validation"}, "url": "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json"}], "usage": "本项目重新划分来源，构造长上下文和自定义评分；不属于官方榜单评估"}}}, "source_run_id": "v41-40ef467cef6a32d2", "test_previously_used": false}, "development": false, "finished_at": "2026-09-17T19:36:27.907478+00:00", "quality_passed": false, "recovery_demonstrated": false, "report": "/mnt_d/huangxiaoyuan/autokv-skip-v4.2/runs/v42-5ce6b6ae69fb813a/report/QUALITY-v4.zh-CN.md", "run_id": "v42-5ce6b6ae69fb813a", "schema_version": 4, "scores": {"experiment": {"P0": {"all": 0.7578125, "cells": {"single_lookup:8192": 0.7578125}, "count": 512, "lengths": {"8192": 0.7578125}, "single_lookup": 0.7578125}, "P32": {"all": 0.8828125, "cells": {"single_lookup:8192": 0.8828125}, "count": 512, "lengths": {"8192": 0.8828125}, "single_lookup": 0.8828125}}}, "selection": {"candidate": null, "depth_reached": 9, "early_full_candidates_used": 3, "frozen_at": "2026-09-17T19:36:27.904522+00:00", "full_candidates_limit": 6, "full_candidates_used": 6, "full_evaluated": [{"bf16_layers": [8, 19], "config_id": "65c2f7facdaa", "fp4_layers": [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], "k": 2, "name": "p2-8-19"}, {"bf16_layers": [5, 8, 19], "config_id": "81090718adcc", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], "k": 3, "name": "p3-5-8-19"}, {"bf16_layers": [5, 8, 19, 29], "config_id": "a20744f75392", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31], "k": 4, "name": "p4-5-8-19-29"}, {"bf16_layers": [5, 8, 19, 20, 25, 26, 27, 28], "config_id": "3a6f2cfa2a92", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 29, 30, 31], "k": 8, "name": "p8-5-8-19-20-25-26-27-28"}, {"bf16_layers": [5, 8, 19, 20, 29], "config_id": "3ac93246e1d9", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31], "k": 5, "name": "p5-5-8-19-20-29"}, {"bf16_layers": [5, 8, 19, 20, 23, 26], "config_id": "a73578a4764d", "fp4_layers": [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 24, 25, 27, 28, 29, 30, 31], "k": 6, "name": "p6-5-8-19-20-23-26"}], "p0": {"all": 0.7578125, "cells": {"single_lookup:8192": 0.7578125}, "count": 512, "lengths": {"8192": 0.7578125}, "single_lookup": 0.7578125}, "pruning_complete": false, "pruning_status": "not_requested", "reason": "已完成容量允许深度及预定完整评估；预算内未找到可行解，不代表不存在", "reference": {"all": 0.8828125, "cells": {"single_lookup:8192": 0.8828125}, "count": 512, "lengths": {"8192": 0.8828125}, "single_lookup": 0.8828125}, "run_id": "v42-5ce6b6ae69fb813a", "status": "no_feasible_within_budget"}, "stage": "quality", "status": "no_feasible_within_budget", "technical_goal_passed": false, "test_data_conditions": null}
